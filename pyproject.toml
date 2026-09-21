@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synth-curator"          # OPEN DECISION 1 in docs/plan.md: confirm name + PyPI availability
+version = "0.0.1.dev0"
+description = "Multi-axiom curation of synthetic medical images (utility-weighted, group-scored, per-class sampling)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "pandas", "scipy", "torch"]
+
+[project.optional-dependencies]
+full = ["pillow", "torchvision", "timm", "lpips", "open_clip_torch", "piq", "scikit-image"]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/synth_curator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Full mode pulls the heavy metric/feature deps: pip install synth-curator[full]

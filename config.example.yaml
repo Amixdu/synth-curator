@@ -1,0 +1,134 @@
+# synth-curator: single input config.
+# Keys map 1:1 to SynthCurator(...) arguments.
+# Values shown are ISIC-2018 / dermoscopy examples: replace them with your own domain's.
+
+# ---------------------------------------------------------------- run
+
+# full: run steps 1-7 (standardize -> ... -> tournament -> weights -> curate).
+# fast: skip steps 1-6; needs metadata_csv + features_dir under `inputs`, and weights.source shipped|file.
+mode: full
+
+# Every step writes here; a step is skipped if its output exists (resume).
+workdir: runs/isic_run1
+
+# Base seed for the whole run. Tournament seeds are seed .. seed+seeds_per_arm-1.
+seed: 0
+
+# Your classifiers. The library never trains anything: each model is a Python class with a
+# `name` and `fit_predict(train_manifest, seed) -> DataFrame[unique_image_id, true_label, predicted_label]`
+# (see synth_curator.model_interface.Model). Weights are derived and a curated set is produced per model,
+# because which metrics help depends on the classifier.
+#
+# Config route: `trainer` is a dotted path 'package.module:ClassOrFactory', called with **params.
+# Python route: SynthCurator(..., models=[MyModel()]) and leave this list out.
+# Names are yours (any string, unique). Only needed in full mode.
+models:
+  - name: my_model
+    trainer: my_project.training:MyModel
+    params: {}
+
+# ---------------------------------------------------------------- inputs
+inputs:
+  # Full mode only.
+  synthetic_dir: /path/to/synthetic_pool
+
+  # Full mode only. Also the reference set for distributional metrics.
+  real_dir: /path/to/real_train
+
+  # The SYNTHETIC pool's generation resolution. Real images are Lanczos-resized to this.
+  # Set to whatever your generator produced.
+  resolution: 512
+
+  # Fast mode: pool CSV with filename, target_class_label, generation-group cols, metric cols.
+  # Full mode: leave null (written to workdir/metadata.csv by step 3).
+  metadata_csv: null
+
+  # Fast mode: dir with real/synthetic DINOv2 + Inception feature .pt files.
+  # Full mode: leave null (written to workdir/features by step 2).
+  features_dir: null
+
+# Class proportions (percent, must sum to ~100). The curated set matches this per class.
+target_distribution:
+  AKIEC: 3.27
+  BCC: 5.13
+  BKL: 10.97
+  DF: 1.15
+  MEL: 11.11
+  NV: 66.95
+  VASC: 1.42
+
+# ---------------------------------------------------------------- metrics (steps 3-4)
+# Instance metrics are scored per image. Distributional metrics are scored per set / generation group.
+# Each metric is a single-metric "arm" in the tournament, so this list = number of arms (+1 random control).
+metrics:
+  instance:
+    - clip_log_odds_score
+    - fscs_score
+    - clip_similarity_cancer
+    - clip_similarity_artifact
+    - lpips_score
+    - fsim_score
+    - brisqe_score
+    - psnr_score
+    - ssim_score
+    - diversity_score
+    - realism_score
+    - is_contribution_score
+  distributional:
+    - fid_inception
+    - kid_dino
+    - swd_dino
+
+  # Minimum set size to score a class/group.
+  dist_min_samples: {fid: 2048, kid: 256, swd: 64}
+
+# ---------------------------------------------------------------- tournament (step 5, full mode)
+# Training itself is your code: the `models` above. The tournament trains each model on each
+# metric's curated dataset (+ a random control) and records predictions.
+tournament:
+  # Training runs per (metric arm, model). Seeds used are run.seed .. run.seed+N-1.
+  # 1 = a weighting signal, not a statistical claim. Raise it to average out training noise
+  # and get more accurate weights; cost scales linearly:
+  #   train jobs = (metrics + 1 random control) x models x seeds_per_arm
+  seeds_per_arm: 1
+
+# ---------------------------------------------------------------- weights (step 6 / fast mode)
+weights:
+  # derived: from this run's tournament, per model (full mode).
+  # shipped: a bundled profile, no training needed (fast mode). Domain-specific: only sensible
+  #          if your data resembles what the profile was derived on.
+  # file:    your own weights JSON at `path`.
+  source: derived
+
+  # shipped only. Available profiles are listed in the README (e.g. isic2018_swin_b).
+  profile: null
+
+  # file only.
+  path: null
+
+  # Weights ALL metrics per class, nothing zeroed; sets the instance-vs-distributional balance.
+  utility_formula: worst_anchored
+
+  # Reshapes only the distributional share among distributional metrics.
+  dist_utility_formula: random_anchored
+
+# ---------------------------------------------------------------- curation (step 7)
+curation:
+  # Images in the curated set.
+  block_size: 8012
+
+  # Sampling probability ~ exp(S/T). Low = greedy, high = near-random. 0.05 was the optimum on ISIC-2018; tune for your domain.
+  temperature: 0.05
+
+  # Columns of the metadata CSV that identify a generation group (e.g. generator checkpoint,
+  # guidance scale). Distributional metrics are scored per group. [] disables.
+  group_by: [source_checkpoint_kimg, cfg_scale]
+
+  # false: single draw (v15 default). true: draw num_blocks, pick the best per class.
+  block_search: false
+
+  # Only used when block_search: true.
+  num_blocks: 1
+
+  # ABSOLUTE cosine similarity to a real image; images above it are dropped. null disables.
+  safety_max_similarity_threshold: 0.97
