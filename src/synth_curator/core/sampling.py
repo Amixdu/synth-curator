@@ -1,9 +1,8 @@
 """Temperature-scaled per-class sampling.
 
-Port of v15 draw_blocks. SEED FORMULA IS FROZEN for reproducibility with the thesis runs:
+SEED FORMULA IS FROZEN for reproducibility across runs:
     seed_offset * 100_000 + block_idx * 100 + class_idx
-where class_idx is the class's position in sorted class order (== the thesis's CLASS_TO_IDX
-for the ISIC-2018 classes).
+where class_idx is the class's position in sorted class order.
 """
 from __future__ import annotations
 

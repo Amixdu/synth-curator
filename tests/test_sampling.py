@@ -14,13 +14,13 @@ def test_class_counts_forces_a_minimum_of_one_even_at_zero_percent():
     assert counts["B"] == 1
 
 
-def test_class_index_is_sorted_order_matching_thesis_isic_mapping():
+def test_class_index_is_sorted_order_matching_the_isic_class_mapping():
     isic = {c: 0 for c in ["AKIEC", "BCC", "BKL", "DF", "MEL", "NV", "VASC"]}
     assert class_index(isic) == {"AKIEC": 0, "BCC": 1, "BKL": 2, "DF": 3, "MEL": 4, "NV": 5, "VASC": 6}
 
 
 def test_draw_uses_frozen_seed_formula():
-    """Reproduce the thesis draw by hand: seed = offset*100_000 + block*100 + class_idx."""
+    """Reproduce the draw by hand: seed = offset*100_000 + block*100 + class_idx."""
     rng = np.random.default_rng(1)
     df = pd.DataFrame({"target_class_label": rng.choice(["A", "B"], 400), "S_Composite": rng.random(400)})
     target, T, offset = {"A": 60.0, "B": 40.0}, 0.1, 3

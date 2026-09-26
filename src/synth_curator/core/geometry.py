@@ -1,4 +1,4 @@
-"""Cosine k-NN in feature space (replaces the thesis's FAISS dependency with plain torch).
+"""Cosine k-NN in feature space (a plain-torch replacement for a FAISS dependency).
 
 Distances match FAISS IndexFlatL2 on L2-normalized vectors: squared L2 = 2 - 2*cos.
 Used by the KNN map, realism (synthetic vs real) and diversity (synthetic vs synthetic).

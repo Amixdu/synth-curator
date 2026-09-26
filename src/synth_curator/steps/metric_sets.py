@@ -24,7 +24,7 @@ from ..core.scoring import group_key
 log = logging.getLogger(__name__)
 
 RANDOM_METRIC_SET = "random_control"
-DIST_METRIC_SET_SEED = 42   # thesis: distributional metric sets draw from the best group with a fixed seed
+DIST_METRIC_SET_SEED = 42   # distributional metric sets draw from the best group with a fixed seed
 
 
 def _top_n_per_class(df: pd.DataFrame, metric: str, counts: dict[str, int]) -> pd.DataFrame:

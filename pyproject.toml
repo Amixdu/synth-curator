@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "synth-curator"          # OPEN DECISION 1 in docs/plan.md: confirm name + PyPI availability
+name = "synth-curator"          # TODO: confirm PyPI availability before release
 version = "0.0.1.dev0"
 description = "Multi-axiom curation of synthetic medical images (utility-weighted, group-scored, per-class sampling)."
 readme = "README.md"
@@ -25,4 +25,5 @@ packages = ["src/synth_curator"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 
-# Full mode pulls the heavy metric/feature deps: pip install synth-curator[full]
+# Image-based metric calculators (FSIM/LPIPS/BRISQUE/CLIP) and DINOv2/InceptionV3 feature
+# extraction need heavier deps: pip install synth-curator[full]

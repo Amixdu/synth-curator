@@ -1,13 +1,10 @@
 """Optional memorization/similarity pre-filter (absolute threshold).
 
-Port of v14 compute_max_similarity_to_real + apply_safety_filter (absolute mode only; the
-relative percentile mode is not carried over).
-
 Per-image max cosine similarity to ANY real image in DINOv2 space is the inner term of FSMS
 (FSMS = 1 - mean_i max_j cos(synth_i, real_j)); high = close to a real image = memorization risk.
 The threshold is ABSOLUTE and GLOBAL (not per class, not a percentile): a memorization breach
-is a property of the image, not its rank within the pool. The thesis calibrated 0.97 against
-ISIC same-lesion pairs (96.2% precision); calibrate your own for another domain.
+is a property of the image, not its rank within the pool. The default of 0.97 was calibrated
+against ISIC same-lesion pairs (96.2% precision); calibrate your own for another domain.
 """
 from __future__ import annotations
 

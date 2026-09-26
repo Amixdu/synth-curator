@@ -1,8 +1,8 @@
 """Step 1. Center-crop + Lanczos-resize the real images to the synthetic pool's generation resolution,
 so metrics compare real and synthetic at the exact pixel grid the generator produced.
 
-Port of utils/standardize_images.py (EDM2/StyleGAN-XL data-prep logic). `resolution` is REQUIRED
-(the thesis hardcoded 512). Output is FLAT: `<stem>.png`; duplicate stems are an error.
+`resolution` is REQUIRED - there is no universal default, since it depends entirely on your
+generative model. Output is FLAT: `<stem>.png`; duplicate stems are an error.
 """
 from __future__ import annotations
 

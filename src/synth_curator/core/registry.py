@@ -52,7 +52,7 @@ def is_instance(metric: str) -> bool:
     return props(metric)["type"] == "instance"
 
 
-# The thesis portfolio (fid_dino is registered but was not part of the locked configuration).
+# The default metric portfolio (fid_dino is registered but not part of the locked configuration).
 DEFAULT_METRICS = [
     "clip_log_odds_score", "fscs_score", "clip_similarity_cancer", "clip_similarity_artifact",
     "lpips_score", "fsim_score", "brisqe_score", "psnr_score", "ssim_score",
