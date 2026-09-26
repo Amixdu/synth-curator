@@ -1,11 +1,25 @@
-"""SynthCurator: the whole pipeline as one object. Each step is a method; `run()` chains them.
+"""SynthCurator: the whole pipeline as one object, one model per instance.
 
-    FULL MODE   standardize -> extract_features -> compute_metrics -> curate_arms
-                -> run_tournament -> derive_weights -> curate
-    FAST MODE   pool already has metrics + features, weights are shipped/supplied -> curate
+This is the full path only, no shortcuts: raw images + a model in, curated set out. `run()` is
+the orchestrator, and it is now a fully linear thread - each step's output is passed explicitly
+into the next, with no step reaching upward to pull its own input:
 
-Every step writes into `workdir` and is skipped if its output already exists, so a crashed run
-resumes where it stopped (delete the file/dir to force a re-run).
+    std_dir = standardize()
+    features_dir = extract_features(std_dir)
+    metadata_csv = compute_metrics(std_dir, features_dir)
+    metric_sets = curate_metric_sets(metadata_csv, features_dir)
+    predictions = run_tournament(metric_sets)
+    weights = derive_weights(predictions)
+    curate(metadata_csv, features_dir, weights, ...)
+
+Every step still checks its own workdir output first and returns immediately if it already
+exists, so a crashed run resumes where it stopped (delete the file/dir to force a re-run) - that
+resumability is orthogonal to the linear threading above and does not reintroduce any branching
+into `run()` itself.
+
+Everything under `workdir` is scoped to one model. If you want to compare models, use a separate
+workdir per model - steps 1-4 will genuinely rerun for each one, which is the accepted cost of a
+workdir holding exactly one model's state.
 """
 from __future__ import annotations
 
@@ -14,9 +28,10 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+from .core.registry import DEFAULT_METRICS, is_instance, props
 from .exceptions import SynthCuratorError
-from .model_interface import Model
-from .steps import arms, curate, features, metrics, standardize, tournament, weights
+from .model_interface import Model, load_model
+from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
 
 log = logging.getLogger(__name__)
 
@@ -25,16 +40,13 @@ class SynthCurator:
     def __init__(
         self,
         workdir: str | Path,
-        target_distribution: dict[str, float],
+        target_distribution: dict[str, float],      # class -> percent, sums to ~100
         *,
-        models: Sequence[Model] = (),         # your classifiers; needed for the tournament (full mode)
-        synthetic_dir: str | Path | None = None,
-        real_dir: str | Path | None = None,
-        resolution: int | None = None,        # synthetic pool's generation resolution
-        metadata_csv: str | Path | None = None,   # Fast mode: metrics already computed
-        features_dir: str | Path | None = None,   # Fast mode: features already extracted
-        weights_json: str | Path | None = None,   # your own weights; None -> shipped_profile
-        shipped_profile: str | None = None,       # e.g. "isic2018_swin_b" (domain-specific!)
+        model: Model,                                # your classifier
+        synthetic_dir: str | Path,                   # <class>/**/<image>
+        real_dir: str | Path,                        # reference set, <class>/<image>
+        resolution: int,                             # synthetic pool's generation resolution
+        metrics: Sequence[str] = DEFAULT_METRICS,   # the portfolio the tournament sweeps
         block_size: int = 8012,
         temperature: float = 0.05,
         group_by: Sequence[str] = ("source_checkpoint_kimg", "cfg_scale"),
@@ -42,25 +54,24 @@ class SynthCurator:
         num_blocks: int = 1,
         safety_max_similarity_threshold: float | None = 0.97,
         utility_formula: str = "worst_anchored",
-        dist_utility_formula: str = "random_anchored",
+        dist_utility_formula: str | None = "random_anchored",
+        dist_min_samples: dict[str, int] | None = None,
         seed: int = 0,
-        seeds_per_arm: int = 1,   # tournament runs per (arm, model); more = more accurate weights
+        seeds_per_metric_set: int = 1,               # tournament runs per metric set; more = more accurate weights
     ):
-        if seeds_per_arm < 1:
-            raise SynthCuratorError("seeds_per_arm must be >= 1")
-        names = [m.name for m in models]
-        if len(set(names)) != len(names):
-            raise SynthCuratorError(f"model names must be unique: {names}")
+        if seeds_per_metric_set < 1:
+            raise SynthCuratorError("seeds_per_metric_set must be >= 1")
+        for metric in metrics:
+            props(metric)
         self.workdir = Path(workdir)
         self.target_distribution = target_distribution
-        self.models = {m.name: m for m in models}
-        self.synthetic_dir = Path(synthetic_dir) if synthetic_dir else None
-        self.real_dir = Path(real_dir) if real_dir else None
+        self.classes = sorted(target_distribution)
+        self.model = model
+        self.synthetic_dir = Path(synthetic_dir)
+        self.real_dir = Path(real_dir)
         self.resolution = resolution
-        self.metadata_csv = Path(metadata_csv) if metadata_csv else self.workdir / "metadata.csv"
-        self.features_dir = Path(features_dir) if features_dir else self.workdir / "features"
-        self.weights_json = Path(weights_json) if weights_json else None
-        self.shipped_profile = shipped_profile
+        self.features_dir = self.workdir / "features"
+        self.metrics = list(metrics)
         self.block_size = block_size
         self.temperature = temperature
         self.group_by = list(group_by)
@@ -69,9 +80,44 @@ class SynthCurator:
         self.safety_max_similarity_threshold = safety_max_similarity_threshold
         self.utility_formula = utility_formula
         self.dist_utility_formula = dist_utility_formula
+        self.dist_min_samples = dist_min_samples
         self.seed = seed
-        self.seeds_per_arm = seeds_per_arm
+        self.seeds = [seed + i for i in range(seeds_per_metric_set)]
         self.workdir.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def from_config(cls, path: str | Path, model: Model | None = None) -> SynthCurator:
+        """Build from config.example.yaml-style YAML. `model` (a Python object) is used if the
+        config's `model:` block is absent; if both are given, the config's `model:` wins."""
+        import yaml
+        config = yaml.safe_load(Path(path).read_text())
+        inputs_cfg = config.get("inputs", {})
+        metrics_cfg = config.get("metrics", {})
+        weights_cfg = config.get("weights", {})
+        curation_cfg = config.get("curation", {})
+        model_cfg = config.get("model")
+        if model_cfg is not None:
+            model = load_model(model_cfg["trainer"], model_cfg.get("params"))
+        if model is None:
+            raise SynthCuratorError("a model is required: add a config 'model:' block, or pass model=... here")
+        synthetic_dir, real_dir, resolution = (
+            inputs_cfg.get("synthetic_dir"), inputs_cfg.get("real_dir"), inputs_cfg.get("resolution"))
+        if not (synthetic_dir and real_dir and resolution):
+            raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
+        kw = dict(
+            model=model, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
+            block_size=curation_cfg.get("block_size", 8012), temperature=curation_cfg.get("temperature", 0.05),
+            group_by=curation_cfg.get("group_by", ["source_checkpoint_kimg", "cfg_scale"]),
+            block_search=curation_cfg.get("block_search", False), num_blocks=curation_cfg.get("num_blocks", 1),
+            safety_max_similarity_threshold=curation_cfg.get("safety_max_similarity_threshold", 0.97),
+            utility_formula=weights_cfg.get("utility_formula", "worst_anchored"),
+            dist_utility_formula=weights_cfg.get("dist_utility_formula", "random_anchored"),
+            dist_min_samples=metrics_cfg.get("dist_min_samples"),
+            seed=config.get("seed", 0), seeds_per_metric_set=config.get("tournament", {}).get("seeds_per_metric_set", 1),
+        )
+        if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
+            kw["metrics"] = [*metrics_cfg.get("instance", []), *metrics_cfg.get("distributional", [])]
+        return cls(config["workdir"], config["target_distribution"], **kw)
 
     # ---- steps ------------------------------------------------------------------------------
 
@@ -80,81 +126,51 @@ class SynthCurator:
         out = self.workdir / "real_standardized"
         if out.exists():
             return out
-        if not (self.real_dir and self.resolution):
-            raise SynthCuratorError("standardize needs real_dir and resolution")
         return standardize.standardize(self.real_dir, out, self.resolution)
 
-    def extract_features(self) -> Path:
-        """2. DINOv2/Inception features + probabilities + KNN map."""
-        if self.features_dir.exists():
+    def extract_features(self, std_dir: Path) -> Path:
+        """2. DINOv2/Inception features, probabilities, KNN map, real labels."""
+        if (self.features_dir / "synthetic_dino.pt").exists():
             return self.features_dir
-        if not self.synthetic_dir:
-            raise SynthCuratorError("extract_features needs synthetic_dir")
-        return features.extract_features(self.standardize(), self.synthetic_dir, self.features_dir)
+        return features.extract_features(std_dir, self.synthetic_dir, self.features_dir, self.real_dir)
 
-    def compute_metrics(self) -> Path:
-        """3. 13-metric pipeline -> metadata CSV."""
-        if self.metadata_csv.exists():
-            return self.metadata_csv
-        if not (self.synthetic_dir and self.real_dir):
-            raise SynthCuratorError("compute_metrics needs synthetic_dir and real_dir")
+    def compute_metrics(self, std_dir: Path, features_dir: Path, wanted: Sequence[str] | None = None) -> Path:
+        """3. Instance-metric columns -> metadata CSV. Returns the cached CSV untouched if it already has them all."""
+        instance_metrics = [metric for metric in (wanted if wanted is not None else self.metrics)
+                            if is_instance(metric)]
         return metrics.compute_metrics(
-            self.synthetic_dir, self.standardize(), self.extract_features(), self.metadata_csv)
+            self.synthetic_dir, std_dir, features_dir, self.workdir / "metadata.csv", instance_metrics)
 
-    def curate_arms(self) -> dict[str, Path]:
+    def curate_metric_sets(self, metadata_csv: Path, features_dir: Path) -> dict[str, dict[int, Path]]:
         """4. One curated dataset per metric + random control."""
-        return arms.curate_arms(
-            self.compute_metrics(), self.workdir / "arms", self.target_distribution,
-            self.block_size, self.seed)
+        return metric_sets.curate_metric_sets(
+            metadata_csv, features_dir, self.workdir / "metric_sets", self.metrics,
+            self.target_distribution, self.block_size, self.group_by, self.seeds, self.synthetic_dir)
 
-    def run_tournament(self):
-        """5. Train/eval each arm with each of your models."""
-        if not self.models:
-            raise SynthCuratorError("the tournament needs at least one model (models=[...])")
-        return tournament.run_tournament(
-            self.curate_arms(), list(self.models.values()), self.workdir / "tournament",
-            [self.seed + i for i in range(self.seeds_per_arm)])
+    def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
+        """5. Train/eval your model on each metric set."""
+        return tournament.run(metric_sets, self.model, self.workdir / "tournament", self.seeds)
 
-    def derive_weights(self) -> dict[str, dict]:
-        """6. Per-model, per-class utility weights from the tournament predictions."""
-        preds = self.run_tournament()
-        out = {}
-        for name in self.models:
-            out[name] = weights.derive_weights(
-                preds, name, self.utility_formula, self.dist_utility_formula)
-            path = self.workdir / "weights" / f"{name}.json"
-            path.parent.mkdir(exist_ok=True)
-            path.write_text(json.dumps(out[name], indent=2))
-        return out
+    def derive_weights(self, predictions: dict) -> dict[str, dict]:
+        """6. Per-class utility weights from the tournament predictions."""
+        resolved = weights.derive_weights(
+            predictions, self.classes, self.utility_formula, self.dist_utility_formula, self.metrics)
+        (self.workdir / "weights.json").write_text(json.dumps(resolved, indent=2))
+        return resolved
 
-    def get_weights(self, model_name: str | None = None) -> dict:
-        """Priority: your weights file > shipped profile > (cached or freshly) derived from the tournament."""
-        if self.weights_json:
-            return json.loads(self.weights_json.read_text())
-        if self.shipped_profile:
-            return weights.load_shipped_weights(self.shipped_profile)
-        if model_name is None or model_name not in self.models:
-            raise SynthCuratorError(
-                f"no weights: pass weights_json, shipped_profile, or a known model (have {list(self.models)})")
-        cached = self.workdir / "weights" / f"{model_name}.json"
-        if cached.exists():
-            return json.loads(cached.read_text())
-        return self.derive_weights()[model_name]
+    def run(self) -> Path:
+        """The whole pipeline -> curated manifest CSV path."""
+        std_dir = self.standardize()                              # 1
+        features_dir = self.extract_features(std_dir)             # 2
+        metadata_csv = self.compute_metrics(std_dir, features_dir)  # 3
+        metric_sets = self.curate_metric_sets(metadata_csv, features_dir)  # 4
+        predictions = self.run_tournament(metric_sets)             # 5
+        resolved_weights = self.derive_weights(predictions)        # 6
 
-    def curate(self, model_name: str | None = None) -> Path:
-        """7. Framework curation with the weights -> manifest CSV path.
-
-        `model_name` picks which model's weights to use (and names the output dir); it can be
-        omitted when weights_json / shipped_profile is given."""
-        w = self.get_weights(model_name)
-        return curate.curate(
-            self.compute_metrics() if self.synthetic_dir else self.metadata_csv,
-            self.features_dir, w, self.workdir / "curated" / (model_name or "default"),
+        return curate.curate(                                      # 7
+            metadata_csv, features_dir, resolved_weights, self.workdir / "curated",
             target_distribution=self.target_distribution, block_size=self.block_size,
             temperature=self.temperature, group_by=self.group_by,
             block_search=self.block_search, num_blocks=self.num_blocks,
-            safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed)
-
-    def run(self, model_name: str | None = None) -> Path:
-        """Whole pipeline. Steps 1-6 only run if the weights they produce are actually needed."""
-        return self.curate(model_name)
+            safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed,
+            image_dir=self.synthetic_dir, min_samples=self.dist_min_samples)

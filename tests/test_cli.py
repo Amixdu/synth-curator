@@ -1,0 +1,104 @@
+"""The literal entry point: `synth-curator config.yaml`."""
+import logging
+import runpy
+import sys
+
+import pandas as pd
+import pytest
+
+from synth_curator import cli
+from synth_curator.cli import main
+
+from .conftest import build_image_pool, fake_extract_features
+
+pytest.importorskip("PIL")
+
+
+def _config(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
+curation: {{block_size: 15, group_by: [], safety_max_similarity_threshold: null}}
+""")
+    from synth_curator import SynthCurator
+    from .conftest import cli_fake_trainer
+    sc = SynthCurator.from_config(config_path, model=cli_fake_trainer())
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+    return config_path
+
+
+def test_cli_runs_full_path_end_to_end(tmp_path, capsys):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
+curation: {{block_size: 15, group_by: [], safety_max_similarity_threshold: null}}
+""")
+
+    # pre-seed features: DINOv2/InceptionV3 extraction needs network + heavy deps not available here
+    from synth_curator import SynthCurator
+    from .conftest import cli_fake_trainer
+    sc = SynthCurator.from_config(config_path, model=cli_fake_trainer())
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+
+    assert main([str(config_path)]) == 0
+
+    manifest_path = capsys.readouterr().out.strip()
+    manifest = pd.read_csv(manifest_path)
+    assert len(manifest) == 15 and manifest.target_class.value_counts().to_dict() == {"A": 8, "B": 4, "C": 3}
+
+
+def test_cli_requires_a_config_argument():
+    try:
+        main([])
+    except SystemExit as e:
+        assert e.code == 2
+    else:
+        raise AssertionError("expected SystemExit for a missing config argument")
+
+
+def test_cli_quiet_flag_requests_warning_level(tmp_path, monkeypatch, capsys):
+    config_path = _config(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.logging, "basicConfig", lambda **kw: captured.update(kw))
+    assert main([str(config_path), "-q"]) == 0
+    assert captured["level"] == logging.WARNING
+    capsys.readouterr()
+
+
+def test_cli_without_quiet_flag_requests_info_level(tmp_path, monkeypatch, capsys):
+    config_path = _config(tmp_path)
+    captured = {}
+    monkeypatch.setattr(cli.logging, "basicConfig", lambda **kw: captured.update(kw))
+    assert main([str(config_path)]) == 0
+    assert captured["level"] == logging.INFO
+    capsys.readouterr()
+
+
+def test_main_module_runs_the_cli_entry_point(tmp_path, monkeypatch, capsys):
+    """python -m synth_curator <config.yaml>"""
+    config_path = _config(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["synth_curator", str(config_path)])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("synth_curator.__main__", run_name="__main__")
+    assert excinfo.value.code == 0
+    manifest = pd.read_csv(capsys.readouterr().out.strip())
+    assert len(manifest) == 15
+
+
+def test_main_module_missing_config_argument_exits_2(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["synth_curator"])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("synth_curator.__main__", run_name="__main__")
+    assert excinfo.value.code == 2

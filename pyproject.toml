@@ -10,14 +10,19 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy", "pandas", "scipy", "torch"]
 
+[project.scripts]
+synth-curator = "synth_curator.cli:main"
+
 [project.optional-dependencies]
-full = ["pillow", "torchvision", "timm", "lpips", "open_clip_torch", "piq", "scikit-image"]
-dev = ["pytest", "ruff"]
+full = ["pyyaml", "pillow", "tqdm", "torchvision", "transformers", "scikit-image", "opencv-python", "phasepack", "lpips", "brisque"]
+yaml = ["pyyaml"]
+dev = ["pytest", "pyyaml", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synth_curator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 # Full mode pulls the heavy metric/feature deps: pip install synth-curator[full]

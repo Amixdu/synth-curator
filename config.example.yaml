@@ -4,48 +4,40 @@
 
 # ---------------------------------------------------------------- run
 
-# full: run steps 1-7 (standardize -> ... -> tournament -> weights -> curate).
-# fast: skip steps 1-6; needs metadata_csv + features_dir under `inputs`, and weights.source shipped|file.
-mode: full
+# Full path only for now: give it raw images (inputs.synthetic_dir + real_dir + resolution) and a
+# model, and it derives weights from a tournament, then curates. Each individual step still runs
+# only if its output is missing.
 
 # Every step writes here; a step is skipped if its output exists (resume).
 workdir: runs/isic_run1
 
-# Base seed for the whole run. Tournament seeds are seed .. seed+seeds_per_arm-1.
+# Base seed for the whole run: curation draw seed, and tournament seeds are seed .. seed+seeds_per_metric_set-1.
 seed: 0
 
-# Your classifiers. The library never trains anything: each model is a Python class with a
-# `name` and `fit_predict(train_manifest, seed) -> DataFrame[unique_image_id, true_label, predicted_label]`
-# (see synth_curator.model_interface.Model). Weights are derived and a curated set is produced per model,
-# because which metrics help depends on the classifier.
+# Your classifier. The library never trains anything: it's a Python class with
+# `train_and_evaluate(train_manifest, seed) -> DataFrame[unique_image_id, true_label, predicted_label]`
+# (see synth_curator.model_interface.Model). One SynthCurator run is scoped to one model - if you
+# want to compare classifiers, use a separate workdir + config per model.
 #
 # Config route: `trainer` is a dotted path 'package.module:ClassOrFactory', called with **params.
-# Python route: SynthCurator(..., models=[MyModel()]) and leave this list out.
-# Names are yours (any string, unique). Only needed in full mode.
-models:
-  - name: my_model
-    trainer: my_project.training:MyModel
-    params: {}
+# Python route: SynthCurator(..., model=MyModel()) and leave this block out.
+# Required.
+model:
+  trainer: my_project.training:MyModel
+  params: {}
 
 # ---------------------------------------------------------------- inputs
+# All three required. No precomputed-metadata/features shortcut yet (coming back later).
 inputs:
-  # Full mode only.
+  # <class_name>/**/<image>, absolute paths used in the final manifest.
   synthetic_dir: /path/to/synthetic_pool
 
-  # Full mode only. Also the reference set for distributional metrics.
+  # <class_name>/<image>. The reference set for distributional metrics.
   real_dir: /path/to/real_train
 
   # The SYNTHETIC pool's generation resolution. Real images are Lanczos-resized to this.
   # Set to whatever your generator produced.
   resolution: 512
-
-  # Fast mode: pool CSV with filename, target_class_label, generation-group cols, metric cols.
-  # Full mode: leave null (written to workdir/metadata.csv by step 3).
-  metadata_csv: null
-
-  # Fast mode: dir with real/synthetic DINOv2 + Inception feature .pt files.
-  # Full mode: leave null (written to workdir/features by step 2).
-  features_dir: null
 
 # Class proportions (percent, must sum to ~100). The curated set matches this per class.
 target_distribution:
@@ -59,7 +51,8 @@ target_distribution:
 
 # ---------------------------------------------------------------- metrics (steps 3-4)
 # Instance metrics are scored per image. Distributional metrics are scored per set / generation group.
-# Each metric is a single-metric "arm" in the tournament, so this list = number of arms (+1 random control).
+# Each metric becomes its own curated dataset (a "metric set") in the tournament, so this list =
+# number of metric sets (+1 random control).
 metrics:
   instance:
     - clip_log_odds_score
@@ -82,30 +75,19 @@ metrics:
   # Minimum set size to score a class/group.
   dist_min_samples: {fid: 2048, kid: 256, swd: 64}
 
-# ---------------------------------------------------------------- tournament (step 5, full mode)
-# Training itself is your code: the `models` above. The tournament trains each model on each
+# ---------------------------------------------------------------- tournament (step 5)
+# Training itself is your code: the `model` above. The tournament trains it on each
 # metric's curated dataset (+ a random control) and records predictions.
 tournament:
-  # Training runs per (metric arm, model). Seeds used are run.seed .. run.seed+N-1.
+  # Training runs per metric set. Seeds used are run.seed .. run.seed+N-1.
   # 1 = a weighting signal, not a statistical claim. Raise it to average out training noise
   # and get more accurate weights; cost scales linearly:
-  #   train jobs = (metrics + 1 random control) x models x seeds_per_arm
-  seeds_per_arm: 1
+  #   train jobs = (metrics + 1 random control) x seeds_per_metric_set
+  seeds_per_metric_set: 1
 
-# ---------------------------------------------------------------- weights (step 6 / fast mode)
+# ---------------------------------------------------------------- weights (step 6)
+# Always derived from this run's tournament for now (no bring-your-own-weights option yet).
 weights:
-  # derived: from this run's tournament, per model (full mode).
-  # shipped: a bundled profile, no training needed (fast mode). Domain-specific: only sensible
-  #          if your data resembles what the profile was derived on.
-  # file:    your own weights JSON at `path`.
-  source: derived
-
-  # shipped only. Available profiles are listed in the README (e.g. isic2018_swin_b).
-  profile: null
-
-  # file only.
-  path: null
-
   # Weights ALL metrics per class, nothing zeroed; sets the instance-vs-distributional balance.
   utility_formula: worst_anchored
 
