@@ -51,11 +51,11 @@ def test_max_similarity_recomputes_when_cache_does_not_cover_pool(feats, df, tmp
 
 def test_apply_safety_filter_drops_images_at_or_above_threshold(feats, df):
     out = apply_safety_filter(df, feats, threshold=0.9, target_distribution={"A": 1, "B": 1},
-                              block_size=2)
+                              num_images=2)
     assert set(out["filename"]) == {"A/s1.png", "B/s0.png"}     # A/s0.png (sim=1.0 >= 0.9) is dropped
 
 
 def test_apply_safety_filter_raises_when_a_class_is_starved_below_the_draw(feats, df):
     # threshold 0.5 drops A/s0.png (1.0) too, leaving class A with only 1 image; ask for 2
     with pytest.raises(SynthCuratorError, match="below the count the draw needs"):
-        apply_safety_filter(df, feats, threshold=0.5, target_distribution={"A": 100, "B": 0}, block_size=2)
+        apply_safety_filter(df, feats, threshold=0.5, target_distribution={"A": 100, "B": 0}, num_images=2)

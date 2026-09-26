@@ -48,11 +48,11 @@ def _random_per_class(df: pd.DataFrame, counts: dict[str, int], seed: int) -> pd
 
 
 def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, metrics: list[str],
-                       target_distribution: dict[str, float], block_size: int, group_by: list[str],
+                       target_distribution: dict[str, float], num_images: int, group_by: list[str],
                        seeds: list[int], image_dir: Path | None = None) -> dict[str, dict[int, Path]]:
     out_dir = Path(out_dir)
     df = pd.read_csv(metadata_csv)
-    counts = class_counts(target_distribution, block_size)
+    counts = class_counts(target_distribution, num_images)
     metric_sets: dict[str, dict[int, Path]] = {}
 
     def write(name: str, seed: int, selected: pd.DataFrame, tag: str = "") -> Path:

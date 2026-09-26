@@ -4,7 +4,7 @@ import pandas as pd
 from synth_curator.core.sampling import class_counts, class_index, draw_blocks
 
 
-def test_class_counts_sum_to_block_size_and_remainder_goes_to_largest():
+def test_class_counts_sum_to_num_images_and_remainder_goes_to_largest():
     counts = class_counts({"A": 50, "B": 30, "C": 20}, 101)
     assert sum(counts.values()) == 101 and counts["A"] == 51
 
@@ -41,6 +41,6 @@ def test_low_temperature_prefers_high_scores():
 
 def test_draw_blocks_undersizes_rather_than_raising_when_pool_is_exhausted(caplog):
     df = pd.DataFrame({"target_class_label": ["A"] * 5, "S_Composite": [0.1] * 5})
-    (block,) = draw_blocks(df, {"A": 100.0}, block_size=50, num_blocks=1, temperature=0.1, seed_offset=0)
+    (block,) = draw_blocks(df, {"A": 100.0}, num_images=50, num_blocks=1, temperature=0.1, seed_offset=0)
     assert len(block["df"]) == 5              # capped at what the pool actually has, no exception
     assert "pool exhausted" in caplog.text

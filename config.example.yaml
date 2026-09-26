@@ -94,10 +94,22 @@ weights:
   # Reshapes only the distributional share among distributional metrics.
   dist_utility_formula: random_anchored
 
+  # The beta in F-beta the tournament scores predictions with. 2.0 = F2 (favors recall over
+  # precision). If your model picks its own checkpoint internally, use this same beta there too
+  # so checkpoint selection and metric weighting agree. Ignored if `scoring` (below) is set.
+  beta: 2.0
+
+  # Optional: a dotted 'package.module:function' path replacing F-beta entirely with your own
+  # metric (accuracy, precision, a custom cost, ...). Signature:
+  #   scoring(true_labels, pred_labels, classes) -> {class_name: score}
+  # Python route: SynthCurator(..., scoring=my_function) instead. Leave `beta` at 2.0 if you set
+  # this - construction raises if you change both at once.
+  # scoring: my_project.metrics:my_scoring_function
+
 # ---------------------------------------------------------------- curation (step 7)
 curation:
   # Images in the curated set.
-  block_size: 8012
+  num_images: 8012
 
   # Sampling probability ~ exp(S/T). Low = greedy, high = near-random. 0.05 was the optimum on ISIC-2018; tune for your domain.
   temperature: 0.05

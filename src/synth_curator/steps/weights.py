@@ -1,11 +1,20 @@
 """Step 6. Tournament predictions -> per-class utility weights {class: {metric: weight}} (each class sums to 1).
 
 Port of v15 calculate_per_class_utilities. Two formulas:
-    worst_anchored   u = (F2 - min_m F2) + 1e-4     weights ALL metrics, nothing zeroed
-    random_anchored  u = max(0, F2 - F2_random)     the sieve: metrics not beating random get 0
+    worst_anchored   u = (score - min_m score) + 1e-4     weights ALL metrics, nothing zeroed
+    random_anchored  u = max(0, score - score_random)     the sieve: metrics not beating random get 0
 `formula` fixes the instance-vs-distributional balance. `dist_formula`, if different, only
 redistributes weight WITHIN the distributional group (computing both over one pool would
-collapse the distributional share). Per-class F2 comes from the saved per-image predictions.
+collapse the distributional share).
+
+Per-class score comes from the saved per-image predictions, via a `scoring` function:
+    scoring(true_labels, pred_labels, classes) -> {class_name: float}
+By default this is `fbeta_per_class` with `beta` (default 2.0 = F2). Pass your own `scoring` for
+anything else (accuracy, per-class precision, a custom cost, ...) - `beta` is then ignored.
+
+If your model's own checkpoint selection (inside `train_and_evaluate`/`train_production`) uses a
+different metric than whatever's configured here, its "best" checkpoint may not be the one the
+tournament actually credits - use the same metric there too, in your own training code.
 
 Predictions: {metric_set_name: DataFrame[true_label, predicted_label, (seed)]}, where metric_set_name
 is a metric name or "random_control". Labels are class names, or ints indexing the sorted classes.
@@ -13,6 +22,7 @@ is a metric name or "random_control". Labels are class names, or ints indexing t
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -23,6 +33,9 @@ from ..exceptions import WeightsError
 log = logging.getLogger(__name__)
 
 RANDOM_METRIC_SET = "random_control"
+
+# true_labels, pred_labels, classes -> {class_name: score}
+ScoringFn = Callable[..., dict]
 
 
 def _labels_to_names(labels, classes: list[str]) -> np.ndarray:
@@ -60,19 +73,21 @@ FORMULAS = {"worst_anchored": _worst_anchored, "random_anchored": _random_anchor
 
 def derive_weights(predictions: dict[str, pd.DataFrame], classes: list[str],
                    formula: str = "worst_anchored", dist_formula: str | None = "random_anchored",
-                   active_metrics: list[str] | None = None) -> dict[str, dict[str, float]]:
+                   active_metrics: list[str] | None = None, beta: float = 2.0,
+                   scoring: ScoringFn | None = None) -> dict[str, dict[str, float]]:
     for f in (formula, dist_formula):
         if f is not None and f not in FORMULAS:
             raise WeightsError(f"unknown formula {f!r}; known: {sorted(FORMULAS)}")
 
     classes = sorted(classes)
     allowed = [m for m in (active_metrics or METRIC_PROPERTIES) if m in METRIC_PROPERTIES]
+    score_fn: ScoringFn = scoring or (lambda t, p, c: fbeta_per_class(t, p, c, beta))
 
-    # mean per-class F2 across seeds, per metric set
+    # mean per-class score across seeds, per metric set
     metric_set_f2: dict[str, dict[str, float]] = {}
     for name, df in predictions.items():
         runs = [d for _, d in df.groupby("seed")] if "seed" in df.columns else [df]
-        per_run = [fbeta_per_class(d["true_label"].values, d["predicted_label"].values, classes) for d in runs]
+        per_run = [score_fn(d["true_label"].values, d["predicted_label"].values, classes) for d in runs]
         metric_set_f2[name] = {c: float(np.mean([r[c] for r in per_run])) for c in classes}
 
     metric_f2 = {m: v for m, v in metric_set_f2.items() if m in allowed}

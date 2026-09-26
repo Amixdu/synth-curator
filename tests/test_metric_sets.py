@@ -31,7 +31,7 @@ def _build(tmp_path, with_group_col=True):
 def test_distributional_metric_set_picks_the_lowest_raw_group(tmp_path):
     metadata_csv, features_dir = _build(tmp_path)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
-                                {"A": 50, "B": 50}, block_size=4, group_by=["grp"], seeds=[0])
+                                {"A": 50, "B": 50}, num_images=4, group_by=["grp"], seeds=[0])
     manifest = pd.read_csv(out["kid_dino"][0])
     assert all("close" in p for p in manifest["source_path"])   # "close" group has ~0 raw kid distance
 
@@ -39,7 +39,7 @@ def test_distributional_metric_set_picks_the_lowest_raw_group(tmp_path):
 def test_distributional_metric_set_skipped_without_group_by_columns(tmp_path):
     metadata_csv, features_dir = _build(tmp_path, with_group_col=False)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
-                                {"A": 50, "B": 50}, block_size=4, group_by=["grp"], seeds=[0])
+                                {"A": 50, "B": 50}, num_images=4, group_by=["grp"], seeds=[0])
     assert "kid_dino" not in out
     assert ms.RANDOM_METRIC_SET in out                            # random control is unaffected
 
@@ -47,7 +47,7 @@ def test_distributional_metric_set_skipped_without_group_by_columns(tmp_path):
 def test_instance_metric_set_skipped_when_column_absent(tmp_path):
     metadata_csv, features_dir = _build(tmp_path)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["psnr_score"],
-                                {"A": 50, "B": 50}, block_size=4, group_by=["grp"], seeds=[0])
+                                {"A": 50, "B": 50}, num_images=4, group_by=["grp"], seeds=[0])
     assert "psnr_score" not in out
 
 
@@ -55,7 +55,7 @@ def test_instance_metric_set_is_top_n_per_class(tmp_path):
     metadata_csv, features_dir = _build(tmp_path)
     df = pd.read_csv(metadata_csv)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score"],
-                                {"A": 100, "B": 0}, block_size=2, group_by=["grp"], seeds=[0])
+                                {"A": 100, "B": 0}, num_images=2, group_by=["grp"], seeds=[0])
     manifest = pd.read_csv(out["lpips_score"][0])
     counts = manifest["target_class"].value_counts().to_dict()
     assert counts == {"A": 2, "B": 1}          # class_counts: B forced to >= 1 even at 0%
@@ -72,7 +72,7 @@ def test_instance_metric_set_is_top_n_per_class(tmp_path):
 def test_random_control_draws_a_fresh_set_per_seed(tmp_path):
     metadata_csv, features_dir = _build(tmp_path)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", [],
-                                {"A": 50, "B": 50}, block_size=4, group_by=["grp"], seeds=[0, 1])
+                                {"A": 50, "B": 50}, num_images=4, group_by=["grp"], seeds=[0, 1])
     m0 = pd.read_csv(out[ms.RANDOM_METRIC_SET][0])
     m1 = pd.read_csv(out[ms.RANDOM_METRIC_SET][1])
     assert out[ms.RANDOM_METRIC_SET][0] != out[ms.RANDOM_METRIC_SET][1]
@@ -89,7 +89,7 @@ def test_curate_metric_sets_is_resumable(tmp_path, monkeypatch):
         return real_write(selected, path, image_dir)
 
     monkeypatch.setattr(ms, "write_manifest", spy)
-    kw = dict(target_distribution={"A": 50, "B": 50}, block_size=4, group_by=["grp"], seeds=[0])
+    kw = dict(target_distribution={"A": 50, "B": 50}, num_images=4, group_by=["grp"], seeds=[0])
     ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score", "kid_dino"], **kw)
     first = len(calls)
     ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score", "kid_dino"], **kw)

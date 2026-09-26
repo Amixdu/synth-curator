@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 
 def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path, *,
-           target_distribution: dict[str, float], block_size: int, temperature: float,
+           target_distribution: dict[str, float], num_images: int, temperature: float,
            group_by: list[str], block_search: bool, num_blocks: int,
            safety_max_similarity_threshold: float | None, seed: int,
            image_dir: Path | None = None, min_samples: dict | None = None,
@@ -58,7 +58,7 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
 
     if safety_max_similarity_threshold is not None:
         df = apply_safety_filter(df, features_dir, safety_max_similarity_threshold,
-                                 target_distribution, block_size,
+                                 target_distribution, num_images,
                                  cache_path=out_dir.parent / ".safety_maxsim.csv")
 
     group_scores = None
@@ -77,7 +77,7 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
 
     df = calculate_per_class_score(df, weights, group_scores, group_by,
                                    per_class_bounds=per_class_normalization)
-    blocks = draw_blocks(df, target_distribution, block_size, num_blocks, temperature, seed)
+    blocks = draw_blocks(df, target_distribution, num_images, num_blocks, temperature, seed)
 
     if block_search:
         blocks = evaluate_distributional_utility_per_class(
@@ -95,7 +95,7 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
     write_manifest(optimal_df, manifest, image_dir)            # deliverable first
     write_block_log(blocks, out_dir / f".block_log_seed{seed}.csv")
     write_weights_used(out_dir / f"weights_used_seed{seed}.json", weights, {
-        "target_distribution": target_distribution, "block_size": block_size, "temperature": temperature,
+        "target_distribution": target_distribution, "num_images": num_images, "temperature": temperature,
         "group_by": group_by, "block_search": block_search, "num_blocks": num_blocks,
         "safety_max_similarity_threshold": safety_max_similarity_threshold, "seed": seed})
     log.info("curated %d images -> %s", len(optimal_df), manifest)

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "synth-curator"          # TODO: confirm PyPI availability before release
 version = "0.0.1.dev0"
-description = "Multi-axiom curation of synthetic medical images (utility-weighted, group-scored, per-class sampling)."
+description = "Utility-weighted curation of synthetic image pools: pick the subset that measurably helps your classifier."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy", "pandas", "scipy", "torch"]

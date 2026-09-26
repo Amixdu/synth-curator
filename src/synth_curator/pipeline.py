@@ -30,8 +30,9 @@ from pathlib import Path
 
 from .core.registry import DEFAULT_METRICS, is_instance, props
 from .exceptions import SynthCuratorError
-from .model_interface import Model, load_model
+from .model_interface import Model, import_dotted, load_model
 from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
+from .steps.weights import ScoringFn
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class SynthCurator:
         real_dir: str | Path,                        # reference set, <class>/<image>
         resolution: int,                             # synthetic pool's generation resolution
         metrics: Sequence[str] = DEFAULT_METRICS,   # the portfolio the tournament sweeps
-        block_size: int = 8012,
+        num_images: int = 8012,
         temperature: float = 0.05,
         group_by: Sequence[str] = ("source_checkpoint_kimg", "cfg_scale"),
         block_search: bool = False,
@@ -58,9 +59,16 @@ class SynthCurator:
         dist_min_samples: dict[str, int] | None = None,
         seed: int = 0,
         seeds_per_metric_set: int = 1,               # tournament runs per metric set; more = more accurate weights
+        metric_beta: float = 2.0,                    # the beta in F-beta the tournament scores by; 2.0 = F2
+        scoring: ScoringFn | None = None,             # override: (true, pred, classes) -> {class: score};
+                                                       # replaces F-beta entirely, and metric_beta is then unused
     ):
         if seeds_per_metric_set < 1:
             raise SynthCuratorError("seeds_per_metric_set must be >= 1")
+        if metric_beta <= 0:
+            raise SynthCuratorError(f"metric_beta must be positive, got {metric_beta}")
+        if scoring is not None and not callable(scoring):
+            raise SynthCuratorError("scoring must be callable: (true_labels, pred_labels, classes) -> {class: score}")
         for metric in metrics:
             props(metric)
         self.workdir = Path(workdir)
@@ -72,7 +80,7 @@ class SynthCurator:
         self.resolution = resolution
         self.features_dir = self.workdir / "features"
         self.metrics = list(metrics)
-        self.block_size = block_size
+        self.num_images = num_images
         self.temperature = temperature
         self.group_by = list(group_by)
         self.block_search = block_search
@@ -83,7 +91,46 @@ class SynthCurator:
         self.dist_min_samples = dist_min_samples
         self.seed = seed
         self.seeds = [seed + i for i in range(seeds_per_metric_set)]
+        self.metric_beta = metric_beta
+        self.scoring = scoring
         self.workdir.mkdir(parents=True, exist_ok=True)
+        self._validate()
+
+    def _validate(self) -> None:
+        """Check everything the pipeline needs is actually present, before any expensive work
+        runs - directories with no images or a model missing a method should fail here, not
+        after standardizing/embedding/scoring the whole pool."""
+        if not callable(getattr(self.model, "train_and_evaluate", None)):
+            raise SynthCuratorError("model must implement train_and_evaluate(train_manifest, seed) -> DataFrame")
+        for name, path in (("synthetic_dir", self.synthetic_dir), ("real_dir", self.real_dir)):
+            if not path.is_dir():
+                raise SynthCuratorError(f"{name} does not exist or is not a directory: {path}")
+            if not standardize.list_images(path):
+                raise SynthCuratorError(f"{name} has no images (.jpg/.jpeg/.png) anywhere under it: {path}")
+        if self.resolution <= 0:
+            raise SynthCuratorError(f"resolution must be a positive integer, got {self.resolution}")
+        if any(v < 0 for v in self.target_distribution.values()):
+            raise SynthCuratorError(f"target_distribution values must be non-negative: {self.target_distribution}")
+        total = sum(self.target_distribution.values())
+        if abs(total - 100) > 1.0:
+            raise SynthCuratorError(f"target_distribution must sum to ~100 (percent), got {total}")
+        for name, formula in (("utility_formula", self.utility_formula), ("dist_utility_formula", self.dist_utility_formula)):
+            if formula is not None and formula not in weights.FORMULAS:
+                raise SynthCuratorError(f"{name} must be one of {sorted(weights.FORMULAS)} or None, got {formula!r}")
+        if self.scoring is not None and self.metric_beta != 2.0:
+            raise SynthCuratorError(
+                "metric_beta is ignored once scoring is set - pass one or the other, not both "
+                f"(got metric_beta={self.metric_beta} alongside a scoring override)")
+        if self.num_images <= 0:
+            raise SynthCuratorError(f"num_images must be a positive integer, got {self.num_images}")
+        if self.temperature <= 0:
+            raise SynthCuratorError(f"temperature must be positive, got {self.temperature}")
+        if self.num_blocks < 1:
+            raise SynthCuratorError(f"num_blocks must be >= 1, got {self.num_blocks}")
+        if self.safety_max_similarity_threshold is not None and not (0.0 <= self.safety_max_similarity_threshold <= 1.0):
+            raise SynthCuratorError(
+                "safety_max_similarity_threshold must be within [0, 1] (it's an absolute cosine "
+                f"similarity) or None, got {self.safety_max_similarity_threshold}")
 
     @classmethod
     def from_config(cls, path: str | Path, model: Model | None = None) -> SynthCurator:
@@ -106,7 +153,7 @@ class SynthCurator:
             raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
         kw = dict(
             model=model, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
-            block_size=curation_cfg.get("block_size", 8012), temperature=curation_cfg.get("temperature", 0.05),
+            num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
             group_by=curation_cfg.get("group_by", ["source_checkpoint_kimg", "cfg_scale"]),
             block_search=curation_cfg.get("block_search", False), num_blocks=curation_cfg.get("num_blocks", 1),
             safety_max_similarity_threshold=curation_cfg.get("safety_max_similarity_threshold", 0.97),
@@ -114,6 +161,8 @@ class SynthCurator:
             dist_utility_formula=weights_cfg.get("dist_utility_formula", "random_anchored"),
             dist_min_samples=metrics_cfg.get("dist_min_samples"),
             seed=config.get("seed", 0), seeds_per_metric_set=config.get("tournament", {}).get("seeds_per_metric_set", 1),
+            metric_beta=weights_cfg.get("beta", 2.0),
+            scoring=import_dotted(weights_cfg["scoring"]) if weights_cfg.get("scoring") else None,
         )
         if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
             kw["metrics"] = [*metrics_cfg.get("instance", []), *metrics_cfg.get("distributional", [])]
@@ -145,16 +194,18 @@ class SynthCurator:
         """4. One curated dataset per metric + random control."""
         return metric_sets.curate_metric_sets(
             metadata_csv, features_dir, self.workdir / "metric_sets", self.metrics,
-            self.target_distribution, self.block_size, self.group_by, self.seeds, self.synthetic_dir)
+            self.target_distribution, self.num_images, self.group_by, self.seeds, self.synthetic_dir)
 
     def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
         """5. Train/eval your model on each metric set."""
         return tournament.run(metric_sets, self.model, self.workdir / "tournament", self.seeds)
 
     def derive_weights(self, predictions: dict) -> dict[str, dict]:
-        """6. Per-class utility weights from the tournament predictions."""
+        """6. Per-class utility weights from the tournament predictions, scored with `scoring`
+        if set, else F-`metric_beta`."""
         resolved = weights.derive_weights(
-            predictions, self.classes, self.utility_formula, self.dist_utility_formula, self.metrics)
+            predictions, self.classes, self.utility_formula, self.dist_utility_formula, self.metrics,
+            beta=self.metric_beta, scoring=self.scoring)
         (self.workdir / "weights.json").write_text(json.dumps(resolved, indent=2))
         return resolved
 
@@ -169,8 +220,22 @@ class SynthCurator:
 
         return curate.curate(                                      # 7
             metadata_csv, features_dir, resolved_weights, self.workdir / "curated",
-            target_distribution=self.target_distribution, block_size=self.block_size,
+            target_distribution=self.target_distribution, num_images=self.num_images,
             temperature=self.temperature, group_by=self.group_by,
             block_search=self.block_search, num_blocks=self.num_blocks,
             safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed,
             image_dir=self.synthetic_dir, min_samples=self.dist_min_samples)
+
+    def train_production(self):
+        """Curate the best set (same as run()), then train the model you'll actually deploy on it.
+
+        Needs your model to additionally implement train_production(train_manifest) -> Any -
+        checked before any curation work happens. The return value is entirely yours (a checkpoint
+        path, a wrapped model, anything); the library never inspects it, just passes it back.
+        """
+        if not callable(getattr(self.model, "train_production", None)):
+            raise SynthCuratorError(
+                "train_production() needs your model to implement train_production(train_manifest) -> Any, "
+                "in addition to train_and_evaluate() - see synth_curator.model_interface.ProductionModel")
+        manifest = self.run()
+        return self.model.train_production(manifest)

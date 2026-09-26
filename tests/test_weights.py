@@ -18,6 +18,16 @@ def test_int_labels_index_sorted_classes():
     assert fbeta_per_class([0, 1], [0, 1], CLASSES) == {"A": 1.0, "B": 1.0}
 
 
+def test_fbeta_beta_is_configurable():
+    # class A: TP=1 FN=1 FP=1. F1 = 2*1 / (2*1 + 1 + 1) = 0.5; F2 (default) = 0.5 too by
+    # coincidence at this beta, so use a case where F1 and F2 clearly diverge: TP=1 FN=2 FP=0.
+    out_f1 = fbeta_per_class(["A", "A", "A"], ["A", "B", "B"], CLASSES, beta=1.0)
+    out_f2 = fbeta_per_class(["A", "A", "A"], ["A", "B", "B"], CLASSES, beta=2.0)
+    assert out_f1["A"] == pytest.approx((2 * 1) / (2 * 1 + 2 + 0))       # F1 = 0.5
+    assert out_f2["A"] == pytest.approx((5 * 1) / (5 * 1 + 4 * 2 + 0))   # F2 = 0.3846...
+    assert out_f1["A"] != pytest.approx(out_f2["A"])
+
+
 def _preds(accuracy):
     rng = np.random.default_rng(0)
     t = rng.choice(CLASSES, 400)
@@ -79,6 +89,37 @@ def test_active_metrics_filters_which_metric_sets_are_used():
     w = derive_weights(preds, CLASSES, formula="worst_anchored", dist_formula=None,
                        active_metrics=["lpips_score"])
     assert set(w["A"]) == {"lpips_score"}
+
+
+def _overall_accuracy(true_labels, pred_labels, classes):
+    """A user-written scoring function, standing in for whatever custom metric someone plugs into
+    `scoring` - accuracy has no real per-class variant, so this broadcasts one number to every
+    class, same as the library would if it shipped one (it doesn't - this is on the caller)."""
+    import numpy as np
+    t = np.asarray(true_labels) == np.asarray(pred_labels)
+    return {c: float(t.mean()) for c in classes}
+
+
+def test_derive_weights_scoring_override_replaces_fbeta_and_ignores_beta():
+    preds = {"lpips_score": _preds(0.9), "psnr_score": _preds(0.3), "random_control": _preds(0.6)}
+    w_scoring = derive_weights(preds, CLASSES, formula="worst_anchored", dist_formula=None,
+                               scoring=_overall_accuracy, beta=999)   # beta must be ignored here
+    w_direct = derive_weights(preds, CLASSES, formula="worst_anchored", dist_formula=None,
+                              scoring=_overall_accuracy)
+    assert w_scoring == w_direct
+    # _overall_accuracy gives every class the same score per metric set, so worst_anchored
+    # (score - min + 1e-4) must give both classes the exact same weights for every metric.
+    assert w_scoring["A"] == w_scoring["B"]
+
+
+def test_derive_weights_beta_changes_the_result():
+    # two metrics whose per-class F1 ranking flips their F2 ranking would be a stronger test, but
+    # even with _preds' random imbalance, a different beta must at least change the raw weights.
+    preds = {"lpips_score": _preds(0.9), "psnr_score": _preds(0.3), "random_control": _preds(0.6)}
+    w_f2 = derive_weights(preds, CLASSES, formula="worst_anchored", dist_formula=None, beta=2.0)
+    w_f1 = derive_weights(preds, CLASSES, formula="worst_anchored", dist_formula=None, beta=1.0)
+    assert w_f2 != w_f1
+    assert sum(w_f1["A"].values()) == pytest.approx(1.0)
 
 
 def test_seeds_are_averaged():

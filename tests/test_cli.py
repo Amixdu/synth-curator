@@ -8,6 +8,7 @@ import pytest
 
 from synth_curator import cli
 from synth_curator.cli import main
+from synth_curator.exceptions import SynthCuratorError
 
 from .conftest import build_image_pool, fake_extract_features
 
@@ -23,7 +24,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
 metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
-curation: {{block_size: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
 """)
     from synth_curator import SynthCurator
     from .conftest import cli_fake_trainer
@@ -42,7 +43,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
 metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
-curation: {{block_size: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
 """)
 
     # pre-seed features: DINOv2/InceptionV3 extraction needs network + heavy deps not available here
@@ -57,6 +58,49 @@ curation: {{block_size: 15, group_by: [], safety_max_similarity_threshold: null}
     manifest_path = capsys.readouterr().out.strip()
     manifest = pd.read_csv(manifest_path)
     assert len(manifest) == 15 and manifest.target_class.value_counts().to_dict() == {"A": 8, "B": 4, "C": 3}
+
+
+def test_cli_train_production_flag_trains_and_prints_the_result(tmp_path, capsys):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer_with_production}}
+metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
+curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+""")
+    from synth_curator import SynthCurator
+    from .conftest import cli_fake_trainer_with_production
+    sc = SynthCurator.from_config(config_path, model=cli_fake_trainer_with_production())
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+
+    assert main([str(config_path), "--train-production"]) == 0
+
+    out = capsys.readouterr().out.strip()
+    assert "trained_on" in out
+    manifest = pd.read_csv(tmp_path / "run" / "curated" / "seed_0.csv")
+    assert len(manifest) == 15   # the full pipeline still ran, same as a plain run()
+
+
+def test_cli_train_production_flag_requires_the_model_to_implement_it(tmp_path):
+    config_path = _config(tmp_path)   # model: tests.conftest:cli_fake_trainer, no train_production
+    with pytest.raises(SynthCuratorError, match="train_production"):
+        main([str(config_path), "--train-production"])
+
+
+def test_cli_without_the_flag_only_calls_run(tmp_path, monkeypatch):
+    """Regression: --train-production must be opt-in, not the new default."""
+    from synth_curator import pipeline as pipeline_mod
+    config_path = _config(tmp_path)
+
+    def boom(self):
+        raise AssertionError("train_production() must not run unless --train-production is passed")
+    monkeypatch.setattr(pipeline_mod.SynthCurator, "train_production", boom)
+
+    assert main([str(config_path)]) == 0
 
 
 def test_cli_requires_a_config_argument():

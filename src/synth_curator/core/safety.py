@@ -52,13 +52,13 @@ def compute_max_similarity_to_real(df: pd.DataFrame, features_dir: Path,
 
 
 def apply_safety_filter(df: pd.DataFrame, features_dir: Path, threshold: float,
-                        target_distribution: dict[str, float], block_size: int,
+                        target_distribution: dict[str, float], num_images: int,
                         cache_path: Path | None = None) -> pd.DataFrame:
     """Drop every image with max_sim_to_real >= threshold; fail early if a class is starved below the draw's quota."""
     df = df.assign(max_sim_to_real=compute_max_similarity_to_real(df, features_dir, cache_path))
     out = df[df["max_sim_to_real"] < threshold].copy()
 
-    need = class_counts(target_distribution, block_size)
+    need = class_counts(target_distribution, num_images)
     short = {c: (int((out["target_class_label"] == c).sum()), n) for c, n in need.items()
              if int((out["target_class_label"] == c).sum()) < n}
     if short:

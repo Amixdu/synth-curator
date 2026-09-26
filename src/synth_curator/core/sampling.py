@@ -19,22 +19,22 @@ def class_index(target_proportions: dict[str, float]) -> dict[str, int]:
     return {c: i for i, c in enumerate(sorted(target_proportions))}
 
 
-def class_counts(target_proportions: dict[str, float], block_size: int) -> dict[str, int]:
+def class_counts(target_proportions: dict[str, float], num_images: int) -> dict[str, int]:
     """Per-class image counts for a block (percent proportions); rounding remainder goes to the largest class."""
     counts, total = {}, 0
     for class_name, pct in target_proportions.items():
-        counts[class_name] = max(1, math.floor(pct / 100.0 * block_size))
+        counts[class_name] = max(1, math.floor(pct / 100.0 * num_images))
         total += counts[class_name]
-    rem = block_size - total
+    rem = num_images - total
     if rem > 0:
         counts[max(counts, key=counts.get)] += rem
     return counts
 
 
-def draw_blocks(df: pd.DataFrame, target_proportions: dict[str, float], block_size: int,
+def draw_blocks(df: pd.DataFrame, target_proportions: dict[str, float], num_images: int,
                 num_blocks: int, temperature: float, seed_offset: int) -> list[dict]:
     """Draw `num_blocks` blocks: per class, sample without replacement with p ~ exp(S_Composite/T)."""
-    counts = class_counts(target_proportions, block_size)
+    counts = class_counts(target_proportions, num_images)
     idx = class_index(target_proportions)
     blocks = []
     for bi in range(num_blocks):

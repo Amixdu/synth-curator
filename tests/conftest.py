@@ -68,6 +68,30 @@ def cli_fake_trainer():
     return fake_model()
 
 
+class _WithProduction:
+    """Wraps a Model with a train_production(manifest) -> dict, for testing the CLI's
+    --train-production flag and Python-side ProductionModel behavior."""
+
+    def __init__(self, base):
+        self._base = base
+
+    def train_and_evaluate(self, manifest, seed):
+        return self._base.train_and_evaluate(manifest, seed)
+
+    def train_production(self, manifest):
+        return {"trained_on": str(manifest)}
+
+
+def cli_fake_trainer_with_production():
+    """Importable via a dotted `trainer:` config path (tests.conftest:cli_fake_trainer_with_production)."""
+    return _WithProduction(fake_model())
+
+
+def cli_fake_scoring(true_labels, pred_labels, classes):
+    """Importable via a dotted `weights.scoring:` config path (tests.conftest:cli_fake_scoring)."""
+    return {c: 0.0 for c in classes}
+
+
 @pytest.fixture
 def image_pool(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)

@@ -15,12 +15,21 @@ sequenceDiagram
     participant CUR as "steps.curate"
     participant GRP as "core.groups"
 
-    User->>CLI: synth-curator config.yaml
+    User->>CLI: synth-curator config.yaml [--train-production]
     CLI->>SC: SynthCurator.from_config(path)
+    SC->>SC: _validate()
+    Note right of SC: fails immediately if the model lacks train_and_evaluate, synthetic_dir or real_dir is missing or has no images, resolution is not positive, target_distribution does not sum to ~100, or metric_beta and scoring are both set, before any expensive work runs
     SC-->>CLI: instance (model, synthetic_dir, real_dir, resolution, metrics, curation config)
-    CLI->>SC: run()
 
-    Note over SC: full path only, no bring-your-own-weights yet - run() is one flat sequence, each step's output threaded explicitly into the next, no step pulls its own input
+    alt --train-production flag given
+        CLI->>SC: train_production()
+        SC->>SC: check model has train_production()
+        Note right of SC: fails immediately here, before curating, if the model only implements train_and_evaluate
+    else default
+        CLI->>SC: run()
+    end
+
+    Note over SC: full path only, no bring-your-own-weights yet - run() is one flat sequence, each step's output threaded explicitly into the next, no step pulls its own input. train_production() calls this same run() internally before doing anything extra
 
     SC->>STD: standardize() [step 1]
     Note right of STD: skip and return immediately if workdir/real_standardized already exists
@@ -58,7 +67,7 @@ sequenceDiagram
     TOUR-->>SC: predictions {metric_set_name: DataFrame[..., seed]}
 
     SC->>WGT: derive_weights(predictions) [step 6]
-    WGT->>WGT: per class: mean F2 per metric set across seeds
+    WGT->>WGT: per class: mean score per metric set across seeds, via scoring or F-metric_beta by default (2.0 = F2)
     WGT->>WGT: worst_anchored / random_anchored formula -> normalize to sum 1
     WGT->>WGT: optional dist_formula re-split within the distributional share only
     WGT-->>SC: weights {class: {metric: weight}}
@@ -68,6 +77,12 @@ sequenceDiagram
     Note right of CUR: skip entirely if out_dir/seed_{seed}.csv already exists
     CUR-->>SC: manifest path
 
-    SC-->>CLI: manifest path
-    CLI-->>User: print(manifest path)
+    alt --train-production flag given
+        SC->>MODEL: train_production(manifest)
+        MODEL-->>SC: artifact, a checkpoint path or a wrapped model or anything else, never inspected by the library
+        SC-->>CLI: artifact
+    else default
+        SC-->>CLI: manifest path
+    end
+    CLI-->>User: print(result)
 ```

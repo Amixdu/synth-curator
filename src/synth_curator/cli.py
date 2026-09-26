@@ -4,7 +4,8 @@ Builds a SynthCurator from the config and runs it - the literal top-level starti
 someone who has real images, a synthetic pool, and a config file, and wants to run the whole
 pipeline without wiring the Python API themselves.
 
-    $ synth-curator config.yaml
+    $ synth-curator config.yaml                     # -> curated manifest CSV path
+    $ synth-curator config.yaml --train-production   # -> also trains the production model
     $ python -m synth_curator config.yaml
 
 The model comes from the config's `model:` block (a dotted `trainer` path); this entry point has
@@ -23,12 +24,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="synth-curator")
     parser.add_argument("config", help="path to a config.example.yaml-style YAML file")
     parser.add_argument("-q", "--quiet", action="store_true", help="only show warnings and errors")
+    parser.add_argument("--train-production", action="store_true",
+                        help="also train the production model on the curated set (needs your "
+                             "model's trainer to implement train_production); prints whatever it returns")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
 
-    manifest = SynthCurator.from_config(args.config).run()
-    print(manifest)
+    sc = SynthCurator.from_config(args.config)
+    result = sc.train_production() if args.train_production else sc.run()
+    print(result)
     return 0
 
 
