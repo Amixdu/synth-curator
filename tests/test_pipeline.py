@@ -568,6 +568,110 @@ def test_compute_metrics_does_not_clear_the_cached_csv_when_metadata_csv_is_unch
     assert seen_out_csv_existed == [False, True]   # second call: out_csv was NOT cleared first - fingerprint matched
 
 
+# ---- fingerprinting: steps 4 (curate_metric_sets) and 7 (curate) -----------------------------
+
+def test_curate_metric_sets_recomputes_when_num_images_changes_on_the_same_workdir(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    workdir = tmp_path / "run"
+    meta_csv = tmp_path / "meta.csv"
+
+    seen_out_dir_existed = []
+
+    def fake_curate_metric_sets(metadata_csv, features_dir, out_dir, metrics, target_distribution,
+                                num_images, dist_group_by, seeds, image_dir=None):
+        seen_out_dir_existed.append(out_dir.exists())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return {}
+
+    monkeypatch.setattr(pipeline_mod.metric_sets, "curate_metric_sets", fake_curate_metric_sets)
+
+    sc1 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, **{**KW, "num_images": 15})
+    sc1.curate_metric_sets(meta_csv, sc1.features_dir)
+
+    sc2 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, **{**KW, "num_images": 30})
+    sc2.curate_metric_sets(meta_csv, sc2.features_dir)
+
+    assert seen_out_dir_existed == [False, False]   # second call: cleared first, since num_images changed
+
+
+def test_curate_metric_sets_does_not_recompute_when_nothing_changed(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    workdir = tmp_path / "run"
+    meta_csv = tmp_path / "meta.csv"
+
+    seen_out_dir_existed = []
+
+    def fake_curate_metric_sets(metadata_csv, features_dir, out_dir, metrics, target_distribution,
+                                num_images, dist_group_by, seeds, image_dir=None):
+        seen_out_dir_existed.append(out_dir.exists())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return {}
+
+    monkeypatch.setattr(pipeline_mod.metric_sets, "curate_metric_sets", fake_curate_metric_sets)
+
+    def make():
+        return SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                            real_dir=real_dir, resolution=32, **KW)
+
+    make().curate_metric_sets(meta_csv, workdir / "features")
+    make().curate_metric_sets(meta_csv, workdir / "features")
+
+    assert seen_out_dir_existed == [False, True]   # second call: NOT cleared - fingerprint matched
+
+
+def test_curate_step_recomputes_when_weights_change(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    meta_csv = tmp_path / "meta.csv"
+
+    seen_manifest_existed = []
+
+    def fake_curate(metadata_csv, features_dir, weights, out_dir, **kw):
+        manifest = out_dir / f"seed_{kw['seed']}.csv"
+        seen_manifest_existed.append(manifest.exists())
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("source_path,target_class,safe_filename\n")
+        return manifest
+
+    monkeypatch.setattr(pipeline_mod.curate, "curate", fake_curate)
+
+    sc = SynthCurator(tmp_path / "run", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                      real_dir=real_dir, resolution=32, **KW)
+    sc.curate(meta_csv, sc.features_dir, {"A": {"m": 1.0}})
+    sc.curate(meta_csv, sc.features_dir, {"A": {"m": 0.5}})   # different weights, same workdir
+
+    assert seen_manifest_existed == [False, False]   # second call: cleared first, since weights changed
+
+
+def test_curate_step_does_not_recompute_when_nothing_changed(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    meta_csv = tmp_path / "meta.csv"
+
+    seen_manifest_existed = []
+
+    def fake_curate(metadata_csv, features_dir, weights, out_dir, **kw):
+        manifest = out_dir / f"seed_{kw['seed']}.csv"
+        seen_manifest_existed.append(manifest.exists())
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("source_path,target_class,safe_filename\n")
+        return manifest
+
+    monkeypatch.setattr(pipeline_mod.curate, "curate", fake_curate)
+
+    sc = SynthCurator(tmp_path / "run", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                      real_dir=real_dir, resolution=32, **KW)
+    same_weights = {"A": {"m": 1.0}}
+    sc.curate(meta_csv, sc.features_dir, same_weights)
+    sc.curate(meta_csv, sc.features_dir, same_weights)
+
+    assert seen_manifest_existed == [False, True]   # second call: NOT cleared - fingerprint matched
+
+
 def test_validate_rejects_a_missing_real_dir(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
     with pytest.raises(SynthCuratorError, match="real_dir"):

@@ -45,6 +45,7 @@ sequenceDiagram
     MET-->>SC: metadata_csv
 
     SC->>MS: curate_metric_sets(metadata_csv, features_dir) [step 4]
+    Note right of MS: fingerprint (metadata_csv, synthetic_dir, target_distribution, num_images, dist_group_by, metrics) - a changed fingerprint clears metric_sets/ first
     opt distributional metrics configured and dist_group_by columns present
         MS->>GRP: compute_group_raw(df, features_dir, dist_group_by, dist_metrics)
         GRP-->>MS: raw FID / KID / SWD per generation group
@@ -75,7 +76,7 @@ sequenceDiagram
     SC->>SC: write workdir/weights.json
 
     SC->>CUR: curate(metadata_csv, features_dir, weights, out_dir, curation params) [step 7]
-    Note right of CUR: skip entirely if out_dir/seed_{seed}.csv already exists
+    Note right of CUR: skip if seed_{seed}.csv exists and its fingerprint (weights + curation params) matches, else recompute
     CUR-->>SC: manifest path
 
     alt --train-production flag given

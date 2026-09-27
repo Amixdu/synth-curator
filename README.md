@@ -19,21 +19,21 @@ uses the result to build one final, per-class-weighted curated set.
 - **Two-tier training.** A cheap, repeated signal drives the metric ranking; a separate, optional,
   one-time call trains the model you actually deploy. You decide how cheap or expensive each is.
 
-> **Status:** the full pipeline works end to end (raw images in, a curated set or a trained model
-> out), but it always derives weights from a fresh tournament with your model — bringing your own
-> precomputed weights isn't wired up yet.
-
 ## Install
 
 ```bash
-pip install synth-curator             # the pipeline + most of the metric portfolio
-pip install synth-curator[full]       # + FSIM/LPIPS/BRISQUE calculators
-pip install synth-curator[yaml]       # + YAML config files / the CLI
+pip install synth-curator                    # the pipeline + most of the metric portfolio
+pip install synth-curator[full]              # + FSIM/LPIPS/BRISQUE calculators
+pip install synth-curator[yaml]              # + YAML config files / the CLI
+pip install synth-curator[full,yaml]         # both
 ```
 
-The default metric portfolio (see Metrics below) includes FSIM/LPIPS/BRISQUE, so `[full]` is
-needed to run `SynthCurator` with its defaults; pass `metrics=[...]` to use only core-dependency
-metrics instead.
+The Quickstart below uses the default metric portfolio, which needs `[full]`; pass
+`metrics=[...]` to use only core-dependency metrics instead.
+
+The feature-extraction step downloads DINOv2 (`facebook/dinov2-base`, via `transformers`) and
+torchvision's InceptionV3 weights on first use — make sure you have network access, or those
+already cached, before running on an offline machine.
 
 ## The idea, in one picture
 
@@ -54,13 +54,21 @@ raw images  ->  standardize  ->  extract features  ->  compute per-image metrics
                           you'll actually deploy on it (once) - train_production
 ```
 
+("Temperature sampling," the "memorization filter," and "block search" are `temperature`,
+`safety_max_similarity_threshold`, and `block_search`/`num_blocks` respectively — see
+`config.example.yaml` for all of them.)
+
 Every step is idempotent — it checks its own output first and skips the work if it's already
-there, so an interrupted run just resumes. See `docs/design.md` for the exact call sequence.
+there, so an interrupted run just resumes. This covers your *inputs* (paths, resolution, config);
+it can't cover your *model*, since that's arbitrary code the library doesn't inspect — if you
+change your model without changing anything else, pass `force_retrain=True` (or set
+`tournament.force_retrain: true` in a config file) to force the tournament to retrain rather than
+reuse cached predictions.
 
 ## Quickstart
 
 A complete, working example: curating a pool of synthetic cat/dog images against a small real
-reference set, then training a deployable ResNet.
+reference set, then training a deployable ResNet. Needs `pip install synth-curator[full]`.
 
 ### 1. Lay out your data
 
@@ -76,9 +84,10 @@ real_reference/
   ...
 ```
 
-Any two-level `<class>/<image>` layout works for both. `real_reference` is whatever real dataset
-you'd train the classifier on anyway — it also doubles as the reference distribution the
-distributional metrics (FID/KID/SWD) compare the synthetic pool against.
+Any two-level `<class>/<image>` layout works for both. `synth-curator` only ever *reads*
+`real_reference` — as the comparison distribution for FID/KID/SWD — it never trains on it or
+manages a train/validation split for you. If your own classifier needs a held-out validation
+slice, carve it out of `real_reference` yourself.
 
 ### 2. Implement your model: two methods, two very different jobs
 
@@ -110,11 +119,14 @@ class ImagesFromManifest(Dataset):
 
 class ResNetClassifier:
     """Both methods train a ResNet on the manifest they're given - the only difference is how much
-    training you're willing to pay for. train_and_evaluate runs ~16x per seed during the
-    tournament, purely to rank metrics, so it stays cheap (few epochs). train_production runs
-    exactly once, on the final curated set, so it's the one worth doing properly."""
+    training you're willing to pay for. train_and_evaluate runs once per (metric, seed) pair during
+    the tournament - one metric set per metric in your portfolio, plus a random-control baseline -
+    purely to rank metrics, so it stays cheap (few epochs). `seed` lets SynthCurator average out
+    training noise across repeats (its seeds_per_metric_set, default 1); use it or ignore it.
+    train_production runs exactly once, on the final curated set, so it's the one worth doing
+    properly."""
 
-    def __init__(self, val_dir: str, class_to_idx: dict, device: str = "cuda"):
+    def __init__(self, val_dir: str, class_to_idx: dict, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
         self.val_dir, self.class_to_idx, self.device = Path(val_dir), class_to_idx, device
 
     def _train(self, train_manifest: Path, epochs: int, seed: int) -> torch.nn.Module:
@@ -135,17 +147,18 @@ class ResNetClassifier:
 
     def _evaluate(self, model: torch.nn.Module) -> pd.DataFrame:
         val_ds = datasets.ImageFolder(self.val_dir, transform=TRANSFORM)
+        idx_to_class = {i: c for c, i in self.class_to_idx.items()}   # the model's own label order
         model.eval()
         ids, true, pred = [], [], []
         with torch.no_grad():
             for i, (x, y) in enumerate(DataLoader(val_ds, batch_size=64)):
                 p = model(x.to(self.device)).argmax(1).cpu()
                 ids += [val_ds.samples[j][0] for j in range(i * 64, i * 64 + len(y))]
-                true += y.tolist()
-                pred += p.tolist()
+                true += [val_ds.classes[v] for v in y.tolist()]      # ImageFolder's own label order
+                pred += [idx_to_class[v] for v in p.tolist()]
         return pd.DataFrame({"unique_image_id": ids, "true_label": true, "predicted_label": pred})
 
-    # REQUIRED: called ~16x per seed during the tournament. Keep this cheap.
+    # REQUIRED: called once per metric set per seed during the tournament. Keep this cheap.
     def train_and_evaluate(self, train_manifest: Path, seed: int) -> pd.DataFrame:
         model = self._train(train_manifest, epochs=3, seed=seed)
         return self._evaluate(model)
@@ -159,11 +172,28 @@ class ResNetClassifier:
         return checkpoint_path   # anything you want - a Path, a dict, a wrapped object
 ```
 
-That's the entire interface. `train_and_evaluate` is required and must return a DataFrame with
-columns `unique_image_id`, `true_label`, `predicted_label`. `train_production` is optional, only
-needed if you want the last step below, and can return *anything* — the library never inspects it.
-Everything about *how* you train — framework, architecture, augmentation, your validation split,
-which checkpoint you keep if you train for several epochs — is entirely yours in both.
+That's the entire interface — a plain class, nothing to subclass (`Model`/`ProductionModel` in
+`synth_curator.model_interface` are `typing.Protocol`s for optional type-checking, not base
+classes). `train_and_evaluate` is required and must return a DataFrame with columns
+`unique_image_id`, `true_label`, `predicted_label`. `train_production` is optional, only needed if
+you want step 5 below, and can return *anything* — the library never inspects it. Everything about
+*how* you train — framework, architecture, augmentation, your validation split, which checkpoint
+you keep if you train for several epochs — is entirely yours in both.
+
+Two things worth being precise about, since getting them wrong fails silently rather than loudly:
+
+- **`train_manifest` lists curated *synthetic* images only** — three columns, `source_path`,
+  `target_class`, `safe_filename` — real images are never added to it automatically. If you want
+  real + synthetic training data together (a reasonable default, and consistent with
+  `real_reference` being real training data you already have), load and concatenate your own real
+  images inside `train_and_evaluate`/`train_production`; `synth-curator` has no opinion on this,
+  same as everything else about training.
+- **`true_label`/`predicted_label` can be class-name strings (as above) or integers** — but
+  integers are interpreted as indices into `sorted(target_distribution)`, *not* your own
+  `class_to_idx`, which the library never sees. The example above translates both back to strings
+  in `_evaluate` (using `val_ds.classes` and `class_to_idx` respectively, since those two can
+  legitimately disagree on ordering) specifically to avoid this ever mattering. `unique_image_id`
+  just needs to be unique within one call; the library never interprets it.
 
 ### 3. Construct the pipeline
 
@@ -175,12 +205,12 @@ class_to_idx = {"cats": 0, "dogs": 1}
 sc = SynthCurator(
     workdir="runs/cats_vs_dogs",
     target_distribution={"cats": 50.0, "dogs": 50.0},   # class proportions in the curated set (%), sums to 100
-    model=ResNetClassifier(val_dir="real_reference_holdout", class_to_idx=class_to_idx),
+    model=ResNetClassifier(val_dir="real_reference_holdout", class_to_idx=class_to_idx),  # a slice you carve out of real_reference yourself
     synthetic_dir="synthetic_pool",
     real_dir="real_reference",
-    resolution=512,               # your generator's output resolution
-    num_images=2000,               # images in the final curated set
-    dist_group_by=[],               # no generation-group metadata for distributional metrics? leave this empty
+    resolution=512,               # your synthetic pool's own resolution; real images are resized to match it
+    num_images=2000,               # images in the final curated set - each tournament metric set is this size too
+    dist_group_by=[],               # empty disables fid_inception/kid_dino/swd_dino entirely, not just grouping
 )
 ```
 
@@ -196,21 +226,9 @@ a CSV with exactly three kinds of column:
 - your `dist_group_by` columns (optional) — only needed if you're using distributional metrics
   (`fid_inception`/`kid_dino`/`swd_dino`) and want to group by something folders can't express
 
-Any other column is ignored. The images still need to exist under `synthetic_dir` either way —
-`metadata_csv` only changes where class labels come from.
-
-The tournament scores each metric set's predictions with F-beta by default (`metric_beta=2.0` =
-F2, favoring recall). Pass a different `metric_beta` for a different F-beta, or replace the
-metric entirely with `scoring=my_function`, a function `(true_labels, pred_labels, classes) ->
-{class_name: score}` you write yourself (`metric_beta` is then unused - construction raises if
-you set both). Whatever you pick, use the exact same computation in your model's own checkpoint
-selection too if it has one, so "best during training" and "best per the tournament" agree.
-
-### Or: classes from a CSV instead of folders
-
-Say your generator was run twice, and you want `fid_inception`/`kid_dino`/`swd_dino` scored per
-run instead of over the whole pool — `generation_batch` isn't something a folder name can carry,
-so it goes in a CSV instead:
+Any other column is ignored, and the images still need to exist under `synthetic_dir` either way —
+`metadata_csv` only changes where class labels (and group columns) come from. For example, if your
+generator was run twice and you want those three metrics scored per run:
 
 ```
 filename,               target_class_label, generation_batch
@@ -220,22 +238,15 @@ dogs/img0001.png,       dogs,                run_b
 dogs/img0002.png,       dogs,                run_b
 ```
 
-```python
-sc = SynthCurator(
-    workdir="runs/cats_vs_dogs",
-    target_distribution={"cats": 50.0, "dogs": 50.0},
-    model=ResNetClassifier(val_dir="real_reference_holdout", class_to_idx=class_to_idx),
-    synthetic_dir="synthetic_pool",
-    real_dir="real_reference",
-    resolution=512,
-    num_images=2000,
-    metadata_csv="metadata.csv",           # instead of scanning synthetic_dir's folders
-    dist_group_by=["generation_batch"],     # a column metadata_csv provides, not synthetic_dir
-)
-```
+Only two lines change from the constructor above: `metadata_csv="metadata.csv"` instead of
+scanning folders, and `dist_group_by=["generation_batch"]` instead of `[]`.
 
-Everything from here on (`sc.run()`, `sc.train_production()`, the config/CLI route) works exactly
-the same either way — this only changes how step 3 gets its classes.
+The tournament scores each metric set's predictions with F-beta by default (`metric_beta=2.0` =
+F2, favoring recall). Pass a different `metric_beta` for a different F-beta, or replace the
+metric entirely with `scoring=my_function`, a function `(true_labels, pred_labels, classes) ->
+{class_name: score}` you write yourself (`metric_beta` is then unused - construction raises if
+you set both). Whatever you pick, use the exact same computation in your model's own checkpoint
+selection too if it has one, so "best during training" and "best per the tournament" agree.
 
 ### 4. Get the curated set and the derived weights
 
@@ -246,7 +257,8 @@ manifest_path = sc.run()
 `run()` does everything up to a curated dataset: standardizes the real images, extracts
 DINOv2/InceptionV3 features, computes the metric portfolio over the pool, curates one dataset per
 metric, trains your classifier on each one (`train_and_evaluate`), turns the results into per-class
-weights, and curates the final set. It returns the path to the curated manifest:
+weights, and curates the final set. It returns the path to one curated manifest — always exactly
+one file, for `self.seed` (default 0), regardless of how many tournament seeds you configured:
 
 ```python
 import pandas as pd
@@ -257,28 +269,36 @@ pd.read_csv(manifest_path)
 # ...
 ```
 
+`source_path` and `target_class` are what `train_manifest` actually gives your model;
+`safe_filename` is the same relative path with `/` replaced, for when you need a flat, unique,
+filesystem-safe name (e.g. copying files out by hand).
+
 Alongside it: `runs/cats_vs_dogs/weights.json` (the derived per-class metric weights),
-`weights_used_seed0.json` (everything `curate()` used, for reproducibility), and a per-block
-diagnostics log.
+`weights_used_seed0.json` (everything the final curation step used, for reproducibility), and a
+per-block diagnostics log.
 
-### 5. Or, get a deployable model directly
+### 5. Train the deployable model
 
-If your model implements `train_production` too, skip step 4 and just call:
+If your model implements `train_production` too:
 
 ```python
 checkpoint_path = sc.train_production()
-# -> curates the set (steps above, or reuses them if already done), then trains once more
-#    on the final curated set via ResNetClassifier.train_production(), and returns
-#    whatever that method returns - here, checkpoints/resnet18_final.pt
 ```
+
+`train_production()` does everything `run()` does — curating the set — and reuses it automatically
+if you already called `sc.run()` first, so calling both costs no more than calling this one alone.
+It then trains once more on the final curated set via `ResNetClassifier.train_production()`, and
+returns whatever that method returns — here, `checkpoints/resnet18_final.pt`.
 
 This fails immediately, before curating anything, if your model doesn't implement
 `train_production` — so you find out at the start of a run, not after it.
 
-### Or: a config file + the CLI
+## Alternatives
 
-Everything in steps 3-4 can live in one YAML file instead (see `config.example.yaml` for every
-field):
+### Config file + CLI
+
+Everything in steps 3-5 can live in one YAML file instead (see `config.example.yaml` for every
+field; needs `pip install synth-curator[yaml]`):
 
 ```yaml
 workdir: runs/cats_vs_dogs
@@ -309,18 +329,22 @@ your model object in memory, just an import path to it.
 
 ## Metrics
 
-The default portfolio (override with `metrics=[...]`):
+The default portfolio (override with `metrics=[...]`, a flat list of names — the YAML config's
+nested `metrics: {instance: [...], distributional: [...]}` is config-only sugar for that same
+list):
 
 | Instance (per image) | Distributional (per generation group) |
 |---|---|
 | `psnr_score`, `ssim_score`, `fsim_score`, `lpips_score` — vs. nearest real image | `fid_inception` |
-| `brisqe_score`, `clip_similarity_*`, `clip_log_odds_score` | `kid_dino` |
+| `brisqe_score`, `clip_similarity_cancer`, `clip_similarity_artifact`, `clip_log_odds_score` | `kid_dino` |
 | `fscs_score`, `diversity_score`, `realism_score`, `is_contribution_score` | `swd_dino` |
 
-`fsim_score`/`lpips_score`/`brisqe_score` need the `[full]` extra (`opencv-python`, `phasepack`,
-`lpips`, `brisque`). Everything else - including `clip_*` - runs on the core dependencies.
-Add your own by registering it in `synth_curator.core.registry.METRIC_PROPERTIES` and a calculator
-in `synth_curator.steps.metrics`.
+`fsim_score`/`lpips_score`/`brisqe_score` (that's the registry's actual spelling, not a typo) need
+the `[full]` extra (`opencv-python`, `phasepack`, `lpips`, `brisque`). Everything else - including
+`clip_*` - runs on the core dependencies. `clip_similarity_cancer`/`clip_similarity_artifact` are
+dermoscopy-specific by name and origin; outside that domain they're a reasonable first pair to
+drop via `metrics=[...]`. Add your own by registering it in
+`synth_curator.core.registry.METRIC_PROPERTIES` and a calculator in `synth_curator.steps.metrics`.
 
 ## Architecture
 
@@ -340,10 +364,18 @@ src/synth_curator/
   core/                 shared math: scoring, FID/KID/SWD, sampling, safety, groups, registry, fingerprint
 ```
 
+`Model`/`ProductionModel` are `typing.Protocol`s, not base classes — nothing needs to inherit from
+them; they exist for optional type-checking and documentation only.
+
 `run()` is fully linear — each step's output is threaded explicitly into the next, with no step
 reaching upward to pull its own input. Everything is validated up front, before step 1 ever runs.
 `docs/design.md` has the exact, verified call sequence as a Mermaid diagram, including
 `train_production()` and which parts are skipped when their output already exists.
+
+## Coming up
+
+- **Bring your own weights.** Every run currently derives weights from a fresh tournament against
+  your model. Passing in precomputed weights, skipping the tournament entirely, is coming up.
 
 ## Development
 

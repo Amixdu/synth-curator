@@ -1,5 +1,6 @@
 # synth-curator: single input config.
-# Keys map 1:1 to SynthCurator(...) arguments.
+# Keys map 1:1 to SynthCurator(...) arguments, except the "metrics:" section, which is a nested
+# instance/distributional split for readability - it's flattened into one list before use.
 # Values shown are ISIC-2018 / dermoscopy examples: replace them with your own domain's.
 
 # ---------------------------------------------------------------- run

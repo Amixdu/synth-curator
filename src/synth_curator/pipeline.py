@@ -259,9 +259,19 @@ class SynthCurator:
 
     def curate_metric_sets(self, metadata_csv: Path, features_dir: Path) -> dict[str, dict[int, Path]]:
         """4. One curated dataset per metric + random control."""
-        return metric_sets.curate_metric_sets(
-            metadata_csv, features_dir, self.workdir / "metric_sets", self.metrics,
+        out_dir = self.workdir / "metric_sets"
+        current = {"metadata_csv": str(self.metadata_csv) if self.metadata_csv else None,
+                  "synthetic_dir": str(self.synthetic_dir), "target_distribution": self.target_distribution,
+                  "num_images": self.num_images, "dist_group_by": self.dist_group_by,
+                  "metrics": sorted(self.metrics)}
+        if out_dir.exists() and fingerprint.exists(out_dir) and not fingerprint.matches(out_dir, current):
+            log.info("curation inputs changed since %s was last built - recomputing", out_dir)
+            shutil.rmtree(out_dir)
+        result = metric_sets.curate_metric_sets(
+            metadata_csv, features_dir, out_dir, self.metrics,
             self.target_distribution, self.num_images, self.dist_group_by, self.seeds, self.synthetic_dir)
+        fingerprint.write(out_dir, current)
+        return result
 
     def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
         """5. Train/eval your model on each metric set."""
@@ -277,6 +287,28 @@ class SynthCurator:
         (self.workdir / "weights.json").write_text(json.dumps(resolved, indent=2))
         return resolved
 
+    def curate(self, metadata_csv: Path, features_dir: Path, resolved_weights: dict) -> Path:
+        """7. Final weighted, temperature-sampled curated set."""
+        out_dir = self.workdir / "curated"
+        manifest = out_dir / f"seed_{self.seed}.csv"
+        current = {"weights": resolved_weights, "target_distribution": self.target_distribution,
+                  "num_images": self.num_images, "temperature": self.temperature,
+                  "dist_group_by": self.dist_group_by, "block_search": self.block_search,
+                  "num_blocks": self.num_blocks,
+                  "safety_max_similarity_threshold": self.safety_max_similarity_threshold}
+        if manifest.exists() and fingerprint.exists(manifest) and not fingerprint.matches(manifest, current):
+            log.info("curation inputs changed since %s was last built - recomputing", manifest)
+            manifest.unlink()
+        result = curate.curate(
+            metadata_csv, features_dir, resolved_weights, out_dir,
+            target_distribution=self.target_distribution, num_images=self.num_images,
+            temperature=self.temperature, dist_group_by=self.dist_group_by,
+            block_search=self.block_search, num_blocks=self.num_blocks,
+            safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed,
+            image_dir=self.synthetic_dir, min_samples=self.dist_min_samples)
+        fingerprint.write(result, current)
+        return result
+
     def run(self) -> Path:
         """The whole pipeline -> curated manifest CSV path."""
         std_dir = self.standardize()                              # 1
@@ -285,14 +317,7 @@ class SynthCurator:
         metric_sets = self.curate_metric_sets(metadata_csv, features_dir)  # 4
         predictions = self.run_tournament(metric_sets)             # 5
         resolved_weights = self.derive_weights(predictions)        # 6
-
-        return curate.curate(                                      # 7
-            metadata_csv, features_dir, resolved_weights, self.workdir / "curated",
-            target_distribution=self.target_distribution, num_images=self.num_images,
-            temperature=self.temperature, dist_group_by=self.dist_group_by,
-            block_search=self.block_search, num_blocks=self.num_blocks,
-            safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed,
-            image_dir=self.synthetic_dir, min_samples=self.dist_min_samples)
+        return self.curate(metadata_csv, features_dir, resolved_weights)  # 7
 
     def train_production(self):
         """Curate the best set (same as run()), then train the model you'll actually deploy on it.
