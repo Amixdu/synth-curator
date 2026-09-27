@@ -237,6 +237,7 @@ def test_from_config_reads_weights_scoring_by_dotted_path(tmp_path):
 workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
 weights: {{scoring: tests.conftest:cli_fake_scoring}}
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
@@ -252,6 +253,7 @@ def test_from_config_reads_weights_beta(tmp_path):
 workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
 weights: {{beta: 1.5}}
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
@@ -376,6 +378,7 @@ workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
+metrics: {{instance: {METRICS}}}
 tournament: {{force_retrain: true}}
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
@@ -427,6 +430,21 @@ def test_validate_rejects_a_target_distribution_class_with_no_matching_synthetic
     with pytest.raises(SynthCuratorError, match="Z"):
         SynthCurator(tmp_path / "r", bad_target, model=fake_model(), synthetic_dir=synthetic_dir,
                     real_dir=real_dir, resolution=32, **KW)
+
+
+def test_validate_rejects_a_distributional_metric_with_no_dist_group_by(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="kid_dino"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32,
+                    **{**KW, "metrics": [*METRICS, "kid_dino"], "dist_group_by": []})
+
+
+def test_validate_allows_a_distributional_metric_when_dist_group_by_is_set(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                real_dir=real_dir, resolution=32,
+                **{**KW, "metrics": [*METRICS, "kid_dino"], "dist_group_by": ["some_col"]})
 
 
 def test_validate_allows_a_zero_percent_class_absent_from_synthetic_dir(tmp_path):
@@ -506,6 +524,7 @@ def test_from_config_reads_metadata_csv(tmp_path):
 workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32, metadata_csv: {csv}}}
+metrics: {{instance: {METRICS}}}
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     sc = SynthCurator.from_config(cfg, model=fake_model())

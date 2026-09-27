@@ -20,6 +20,7 @@ from ..core.output import write_manifest
 from ..core.registry import is_distributional, props
 from ..core.sampling import class_counts
 from ..core.scoring import group_key
+from ..exceptions import SynthCuratorError
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,11 @@ def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, me
     group_raw = None
     if dist_metrics:
         if dist_group_by and all(c in df.columns for c in dist_group_by):
+            if group_key(df, dist_group_by).nunique() < 2:
+                raise SynthCuratorError(
+                    f"dist_group_by {dist_group_by} produces only one group across the whole pool - "
+                    f"{dist_metrics} need >=2 real generation groups to compare, so they can't do "
+                    "anything here. Drop them from metrics, or fix dist_group_by.")
             group_raw = compute_group_raw(df, features_dir, dist_group_by, dist_metrics)
         else:
             log.warning("distributional metric sets %s skipped: they need dist_group_by columns present in the metadata",

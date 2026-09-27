@@ -339,6 +339,10 @@ list):
 | `brisqe_score`, `clip_similarity_cancer`, `clip_similarity_artifact`, `clip_log_odds_score` | `kid_dino` |
 | `fscs_score`, `diversity_score`, `realism_score`, `is_contribution_score` | `swd_dino` |
 
+The distributional metrics need `dist_group_by` pointing at >=2 real generation groups (different
+checkpoints, CFG values, whatever you actually varied) to mean anything — with only one group,
+they can't compare anything, so `SynthCurator` rejects that combination at construction.
+
 `fsim_score`/`lpips_score`/`brisqe_score` (that's the registry's actual spelling, not a typo) need
 the `[full]` extra (`opencv-python`, `phasepack`, `lpips`, `brisque`). Everything else - including
 `clip_*` - runs on the core dependencies. `clip_similarity_cancer`/`clip_similarity_artifact` are

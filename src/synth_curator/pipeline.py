@@ -32,7 +32,7 @@ from pathlib import Path
 import pandas as pd
 
 from .core import fingerprint
-from .core.registry import DEFAULT_METRICS, is_instance, props
+from .core.registry import DEFAULT_METRICS, is_distributional, is_instance, props
 from .exceptions import SynthCuratorError
 from .model_interface import Model, import_dotted, load_model
 from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
@@ -151,6 +151,12 @@ class SynthCurator:
         missing = sorted(wanted - present)
         if missing:
             raise SynthCuratorError(f"target_distribution has class(es) not found in {source}: {missing}")
+        dist_metrics = [m for m in self.metrics if is_distributional(m)]
+        if dist_metrics and not self.dist_group_by:
+            raise SynthCuratorError(
+                f"metrics includes distributional metric(s) {dist_metrics} but dist_group_by is "
+                "empty - they need >=2 real generation groups to compare and do nothing without "
+                "one. Drop them from metrics, or set dist_group_by.")
         for name, formula in (("utility_formula", self.utility_formula), ("dist_utility_formula", self.dist_utility_formula)):
             if formula is not None and formula not in weights.FORMULAS:
                 raise SynthCuratorError(f"{name} must be one of {sorted(weights.FORMULAS)} or None, got {formula!r}")

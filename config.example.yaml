@@ -122,7 +122,8 @@ curation:
   temperature: 0.05
 
   # Columns identifying a generation group, scored per group. Distributional metrics only
-  # (fid/kid/swd) - instance metrics are unaffected. [] disables them.
+  # (fid/kid/swd) - instance metrics are unaffected. Need >=2 real groups (e.g. checkpoints or
+  # CFG values you actually varied) to mean anything; drop those metrics if you only have one.
   dist_group_by: [source_checkpoint_kimg, cfg_scale]
 
   # false: single draw (v15 default). true: draw num_blocks, pick the best per class.

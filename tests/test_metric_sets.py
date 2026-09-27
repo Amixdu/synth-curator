@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 import torch
 
+from synth_curator.exceptions import SynthCuratorError
 from synth_curator.steps import metric_sets as ms
 
 
@@ -34,6 +35,28 @@ def test_distributional_metric_set_picks_the_lowest_raw_group(tmp_path):
                                 {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0])
     manifest = pd.read_csv(out["kid_dino"][0])
     assert all("close" in p for p in manifest["source_path"])   # "close" group has ~0 raw kid distance
+
+
+def test_distributional_metric_set_rejects_a_single_group(tmp_path):
+    """A dist_group_by that resolves to only one distinct group can't discriminate anything - the
+    "best" group is trivially the only one, so it's a config error, not a silent no-op."""
+    features_dir = tmp_path / "feat"
+    features_dir.mkdir()
+    real = {"r0.png": torch.tensor([0.0, 0.0])}
+    synth, rows = {}, []
+    for cls in ("A", "B"):
+        for i in range(3):
+            fname = f"only/{cls}/{i}.png"
+            synth[fname] = torch.tensor([0.0, 0.0])
+            rows.append({"filename": fname, "target_class_label": cls, "grp": "only_checkpoint"})
+    torch.save(real, features_dir / "real_dino.pt")
+    torch.save(synth, features_dir / "synthetic_dino.pt")
+    metadata_csv = tmp_path / "metadata.csv"
+    pd.DataFrame(rows).to_csv(metadata_csv, index=False)
+
+    with pytest.raises(SynthCuratorError, match="only one group"):
+        ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
+                              {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0])
 
 
 def test_distributional_metric_set_skipped_without_dist_group_by_columns(tmp_path):
