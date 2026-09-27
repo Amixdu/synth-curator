@@ -327,6 +327,88 @@ def test_standardize_still_skips_when_nothing_changed(tmp_path, monkeypatch):
     sc2.standardize()   # same resolution, same dirs - must not call standardize.standardize()
 
 
+# ---- pool_workdir: sharing steps 1-3 across a target_distribution/model sweep -----------------
+
+def test_pool_workdir_defaults_to_workdir(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    sc = SynthCurator(tmp_path / "run", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                      real_dir=real_dir, resolution=32, **KW)
+    assert sc.pool_workdir == sc.workdir
+    assert sc.features_dir == sc.workdir / "features"
+
+
+def test_pool_workdir_separates_steps_1_to_3_from_the_rest(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    pool = tmp_path / "shared_pool"
+    sc = SynthCurator(tmp_path / "run", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                      real_dir=real_dir, resolution=32, pool_workdir=pool, **KW)
+    assert sc.features_dir == pool / "features"
+
+    std_dir = sc.standardize()
+    assert std_dir == pool / "real_standardized"
+    assert not (sc.workdir / "real_standardized").exists()
+
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+    metadata_csv = sc.compute_metrics(std_dir, sc.features_dir)
+    assert metadata_csv == pool / "metadata.csv"
+
+    metric_sets_out = sc.curate_metric_sets(metadata_csv, sc.features_dir)
+    assert all(str(sc.workdir) in str(p) for paths in metric_sets_out.values() for p in paths.values())
+
+
+def test_pool_workdir_shared_across_a_target_distribution_sweep_is_only_built_once(tmp_path, monkeypatch):
+    """The actual sweep scenario: two SynthCurator instances, different workdir + target_distribution,
+    same pool_workdir - standardize() and extract_features() must be skipped outright for the
+    second. compute_metrics() always calls through (its own per-column resumability handles reuse,
+    same as always), but since the underlying features are untouched, its output must come out
+    byte-identical either way."""
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    pool = tmp_path / "shared_pool"
+
+    def make(workdir, target_distribution):
+        sc = SynthCurator(tmp_path / workdir, target_distribution, model=fake_model(),
+                          synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32,
+                          pool_workdir=pool, **KW)
+        std_dir = sc.standardize()
+        if not (sc.features_dir / "synthetic_dino.pt").exists():
+            fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+        else:
+            sc.extract_features(std_dir)   # should hit the skip path, not the real (network) extractor
+        sc.compute_metrics(std_dir, sc.features_dir)
+        return sc
+
+    sc1 = make("sweep_a", TARGET)
+    metadata_before = pd.read_csv(pool / "metadata.csv")
+
+    def boom(*a, **kw):
+        raise AssertionError("pool steps should be skipped/untouched on the second sweep point")
+    monkeypatch.setattr(pipeline_mod.standardize, "standardize", boom)
+    monkeypatch.setattr(pipeline_mod.features, "extract_features", boom)
+
+    other_target = {"A": 20.0, "B": 30.0, "C": 50.0}   # different target_distribution, same pool
+    sc2 = make("sweep_b", other_target)   # must not hit either boom()
+
+    assert sc1.workdir != sc2.workdir
+    assert sc1.pool_workdir == sc2.pool_workdir == pool
+    pd.testing.assert_frame_equal(pd.read_csv(pool / "metadata.csv"), metadata_before)
+
+
+def test_from_config_reads_pool_workdir(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    pool = tmp_path / "shared_pool"
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32, pool_workdir: {pool}}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+""")
+    sc = SynthCurator.from_config(cfg, model=fake_model())
+    assert sc.pool_workdir == pool
+
+
 def test_extract_features_recomputes_when_synthetic_dir_changes_on_the_same_workdir(tmp_path, monkeypatch):
     from synth_curator import pipeline as pipeline_mod
     real_dir, synthetic_dir = build_image_pool(tmp_path)

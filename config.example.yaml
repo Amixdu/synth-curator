@@ -28,7 +28,7 @@ model:
   params: {}
 
 # ---------------------------------------------------------------- inputs
-# All three required (metadata_csv below is optional).
+# All three required (metadata_csv and pool_workdir below is optional).
 inputs:
   # <class_name>/**/<image>, absolute paths used in the final manifest.
   synthetic_dir: /path/to/synthetic_pool
@@ -42,6 +42,11 @@ inputs:
 
   # Optional: filename/target_class_label CSV instead of scanning synthetic_dir for classes.
   # metadata_csv: /path/to/metadata.csv
+
+  # Optional: cache for steps 1-3 only (standardize/features/metrics). Defaults to workdir - set
+  # this to one shared path across a sweep of workdirs to
+  # avoid re-standardizing/re-extracting/re-scoring the same synthetic_dir/real_dir every time.
+  # pool_workdir: /path/to/shared_pool
 
 # Class proportions (percent, must sum to ~100). The curated set matches this per class.
 target_distribution:

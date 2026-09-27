@@ -248,6 +248,10 @@ metric entirely with `scoring=my_function`, a function `(true_labels, pred_label
 you set both). Whatever you pick, use the exact same computation in your model's own checkpoint
 selection too if it has one, so "best during training" and "best per the tournament" agree.
 
+Sweeping over `target_distribution` (or the model) with a separate `workdir` per run? Steps 1-3
+don't depend on either — pass the same `pool_workdir` to each `SynthCurator` and they'll only be
+built once, shared across the sweep, instead of re-standardizing the same pool every time.
+
 ### 4. Get the curated set and the derived weights
 
 ```python

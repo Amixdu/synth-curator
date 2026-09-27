@@ -17,9 +17,11 @@ exists, so a crashed run resumes where it stopped (delete the file/dir to force 
 resumability is orthogonal to the linear threading above and does not reintroduce any branching
 into `run()` itself.
 
-Everything under `workdir` is scoped to one model. If you want to compare models, use a separate
-workdir per model - steps 1-4 will genuinely rerun for each one, which is the accepted cost of a
-workdir holding exactly one model's state.
+`workdir` is scoped to one model and one curation run. Steps 1-3 don't depend on either, though -
+they only care about `synthetic_dir`/`real_dir`/`resolution`/`metadata_csv` - so `pool_workdir`
+(defaults to `workdir`) lets you share just those across a sweep of workdirs (different models,
+`target_distribution`s, etc.) instead of re-standardizing/re-extracting/re-scoring the same pool
+for every one.
 """
 from __future__ import annotations
 
@@ -51,6 +53,8 @@ class SynthCurator:
         synthetic_dir: str | Path,                   # <class>/**/<image>
         real_dir: str | Path,                        # reference set, <class>/<image>
         resolution: int,                             # synthetic pool's generation resolution
+        pool_workdir: str | Path | None = None,       # steps 1-3's cache (standardize/features/metrics);
+                                                       # defaults to workdir - share it across a target_distribution sweep
         metrics: Sequence[str] = DEFAULT_METRICS,   # the portfolio the tournament sweeps
         num_images: int = 8012,
         temperature: float = 0.05,
@@ -78,13 +82,14 @@ class SynthCurator:
         for metric in metrics:
             props(metric)
         self.workdir = Path(workdir)
+        self.pool_workdir = Path(pool_workdir) if pool_workdir is not None else self.workdir
         self.target_distribution = target_distribution
         self.classes = sorted(target_distribution)
         self.model = model
         self.synthetic_dir = Path(synthetic_dir)
         self.real_dir = Path(real_dir)
         self.resolution = resolution
-        self.features_dir = self.workdir / "features"
+        self.features_dir = self.pool_workdir / "features"
         self.metrics = list(metrics)
         self.num_images = num_images
         self.temperature = temperature
@@ -102,6 +107,7 @@ class SynthCurator:
         self.scoring = scoring
         self.force_retrain = force_retrain
         self.workdir.mkdir(parents=True, exist_ok=True)
+        self.pool_workdir.mkdir(parents=True, exist_ok=True)
         self._validate()
 
     def _validate(self) -> None:
@@ -199,6 +205,7 @@ class SynthCurator:
             raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
         kw = dict(
             model=model, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
+            pool_workdir=inputs_cfg.get("pool_workdir"),
             num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
             dist_group_by=curation_cfg.get("dist_group_by", ["source_checkpoint_kimg", "cfg_scale"]),
             metadata_csv=inputs_cfg.get("metadata_csv"),
@@ -224,7 +231,7 @@ class SynthCurator:
 
     def standardize(self) -> Path:
         """1. Resize real images to the pool's generation resolution."""
-        out = self.workdir / "real_standardized"
+        out = self.pool_workdir / "real_standardized"
         current = {"real_dir": str(self.real_dir), "resolution": self.resolution}
         stale = fingerprint.exists(out) and not fingerprint.matches(out, current)
         if out.exists() and not stale:
@@ -252,7 +259,7 @@ class SynthCurator:
         """3. Instance-metric columns -> metadata CSV. Returns the cached CSV untouched if it already has them all."""
         instance_metrics = [metric for metric in (wanted if wanted is not None else self.metrics)
                             if is_instance(metric)]
-        out_csv = self.workdir / "metadata.csv"
+        out_csv = self.pool_workdir / "metadata.csv"
         current = {"metadata_csv": str(self.metadata_csv) if self.metadata_csv else None,
                   "synthetic_dir": str(self.synthetic_dir)}
         if out_csv.exists() and fingerprint.exists(out_csv) and not fingerprint.matches(out_csv, current):
