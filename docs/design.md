@@ -50,13 +50,13 @@ sequenceDiagram
         MS->>GRP: compute_group_raw(df, features_dir, dist_group_by, dist_metrics)
         GRP-->>MS: raw FID / KID / SWD per generation group
     end
-    MS->>MS: per instance metric: top-N per class
-    MS->>MS: per distributional metric: best group by raw score, then random draw
+    MS->>MS: per instance metric: top-N per class, deterministic - one manifest, seed[0] only
+    MS->>MS: per distributional metric: best group by raw score, then fresh random draw per seed
     MS->>MS: random_control: fresh random per-class draw, one per seed
-    MS-->>SC: metric_sets {metric_name: {seed: manifest.csv}}
+    MS-->>SC: metric_sets {metric_name: {seed: manifest.csv}} - instance metrics have one seed key, distributional/random_control have one per random_seeds_per_metric_set
 
     SC->>TOUR: run_tournament(metric_sets) [step 5]
-    loop each metric_set x each seed
+    loop each metric_set x each of its own seeds
         TOUR->>TOUR: check cache {metric_set}_seed{seed}_predictions.csv
         alt predictions already cached and not force_retrain
             TOUR-->>TOUR: load predictions.csv, log the reuse

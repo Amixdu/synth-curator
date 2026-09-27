@@ -12,7 +12,7 @@
 # Every step writes here; a step is skipped if its output exists (resume).
 workdir: runs/isic_run1
 
-# Base seed for the whole run: curation draw seed, and tournament seeds are seed .. seed+seeds_per_metric_set-1.
+# Base seed for the whole run: curation draw seed, and tournament seeds are seed .. seed+random_seeds_per_metric_set-1.
 seed: 0
 
 # Your classifier. The library never trains anything: it's a Python class with
@@ -83,11 +83,12 @@ metrics:
 # Training itself is your code: the `model` above. The tournament trains it on each
 # metric's curated dataset (+ a random control) and records predictions.
 tournament:
-  # Training runs per metric set. Seeds used are run.seed .. run.seed+N-1.
-  # 1 = a weighting signal, not a statistical claim. Raise it to average out training noise
-  # and get more accurate weights; cost scales linearly:
-  #   train jobs = (metrics + 1 random control) x seeds_per_metric_set
-  seeds_per_metric_set: 1
+  # Repeats for distributional metrics (fid/kid/swd) and random_control only.
+  # Instance metrics are deterministic and always train exactly once. Seeds used are run.seed .. run.seed+N-1.
+  # 1 = a weighting signal, not a statistical claim. Raise it to average out sampling + training
+  # noise for the randomized metric sets; cost scales linearly:
+  #   train jobs = (instance metrics) + (distributional metrics + 1 random control) x random_seeds_per_metric_set
+  random_seeds_per_metric_set: 1
 
   # true: ignore cached predictions and retrain everything, e.g. after changing the model.
   force_retrain: false

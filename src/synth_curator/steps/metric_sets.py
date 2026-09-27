@@ -1,11 +1,15 @@
 """Step 4. Curate one dataset per metric (a "metric set") plus a random control, for the tournament.
 
 Each metric set isolates ONE metric, so its downstream score says how useful that metric alone is.
-    instance metric       top-N per class by the metric (deterministic)
+    instance metric       top-N per class by the metric (deterministic - curated once, trained once,
+                          nothing for random_seeds_per_metric_set to average out)
     distributional metric best generation group by that metric (needs `dist_group_by`), then a
-                          random per-class draw from that group (fixed seed)
+                          fresh random per-class draw from that group, per tournament seed
     random_control        a random per-class draw; a fresh draw per tournament seed (the baseline
                           that random_anchored weights are measured against)
+Distributional metrics and random_control are both randomized, so both get one manifest per seed
+in `seeds` - that's what `random_seeds_per_metric_set` actually repeats. Instance metrics are
+deterministic, so they get exactly one manifest regardless of how many seeds are configured.
 Port of metric_pipeline/dataset_curation/main.py. Returns {metric_set: {seed: manifest_csv}}.
 """
 from __future__ import annotations
@@ -25,7 +29,6 @@ from ..exceptions import SynthCuratorError
 log = logging.getLogger(__name__)
 
 RANDOM_METRIC_SET = "random_control"
-DIST_METRIC_SET_SEED = 42   # distributional metric sets draw from the best group with a fixed seed
 
 
 def _top_n_per_class(df: pd.DataFrame, metric: str, counts: dict[str, int]) -> pd.DataFrame:
@@ -82,13 +85,14 @@ def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, me
                 continue
             best = group_raw[m].idxmin()                       # all distributional metrics: lower is better
             pool = df[group_key(df, dist_group_by) == best]
-            path = write(m, 0, _random_per_class(pool, counts, DIST_METRIC_SET_SEED))
+            # randomized, like random_control - a fresh draw per seed, not one fixed dataset
+            metric_sets[m] = {s: write(m, s, _random_per_class(pool, counts, s), f"_seed{s}") for s in seeds}
         else:
             if m not in df.columns:
                 log.warning("metric set %s skipped: no such column in the metadata", m)
                 continue
-            path = write(m, 0, _top_n_per_class(df, m, counts))
-        metric_sets[m] = {s: path for s in seeds}               # one fixed dataset, reused for every seed
+            # deterministic - one dataset, trained once, regardless of how many seeds are configured
+            metric_sets[m] = {seeds[0]: write(m, seeds[0], _top_n_per_class(df, m, counts))}
 
     metric_sets[RANDOM_METRIC_SET] = {s: write(RANDOM_METRIC_SET, s, _random_per_class(df, counts, s), f"_seed{s}")
                                       for s in seeds}

@@ -63,14 +63,14 @@ class SynthCurator:
         dist_utility_formula: str | None = "random_anchored",
         dist_min_samples: dict[str, int] | None = None,
         seed: int = 0,
-        seeds_per_metric_set: int = 1,               # tournament runs per metric set; more = more accurate weights
+        random_seeds_per_metric_set: int = 1,         # repeats for distributional metrics + random_control only - instance metrics always train once
         metric_beta: float = 2.0,                    # the beta in F-beta the tournament scores by; 2.0 = F2
         scoring: ScoringFn | None = None,             # override: (true, pred, classes) -> {class: score};
                                                        # replaces F-beta entirely, and metric_beta is then unused
         force_retrain: bool = False,                  # ignore the tournament's prediction cache, e.g. after changing the model
     ):
-        if seeds_per_metric_set < 1:
-            raise SynthCuratorError("seeds_per_metric_set must be >= 1")
+        if random_seeds_per_metric_set < 1:
+            raise SynthCuratorError("random_seeds_per_metric_set must be >= 1")
         if metric_beta <= 0:
             raise SynthCuratorError(f"metric_beta must be positive, got {metric_beta}")
         if scoring is not None and not callable(scoring):
@@ -97,7 +97,7 @@ class SynthCurator:
         self.dist_utility_formula = dist_utility_formula
         self.dist_min_samples = dist_min_samples
         self.seed = seed
-        self.seeds = [seed + i for i in range(seeds_per_metric_set)]
+        self.seeds = [seed + i for i in range(random_seeds_per_metric_set)]
         self.metric_beta = metric_beta
         self.scoring = scoring
         self.force_retrain = force_retrain
@@ -207,7 +207,8 @@ class SynthCurator:
             utility_formula=weights_cfg.get("utility_formula", "worst_anchored"),
             dist_utility_formula=weights_cfg.get("dist_utility_formula", "random_anchored"),
             dist_min_samples=metrics_cfg.get("dist_min_samples"),
-            seed=config.get("seed", 0), seeds_per_metric_set=config.get("tournament", {}).get("seeds_per_metric_set", 1),
+            seed=config.get("seed", 0),
+            random_seeds_per_metric_set=config.get("tournament", {}).get("random_seeds_per_metric_set", 1),
             metric_beta=weights_cfg.get("beta", 2.0),
             scoring=import_dotted(weights_cfg["scoring"]) if weights_cfg.get("scoring") else None,
             force_retrain=config.get("tournament", {}).get("force_retrain", False),
@@ -281,7 +282,7 @@ class SynthCurator:
 
     def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
         """5. Train/eval your model on each metric set."""
-        return tournament.run(metric_sets, self.model, self.workdir / "tournament", self.seeds,
+        return tournament.run(metric_sets, self.model, self.workdir / "tournament",
                               force_retrain=self.force_retrain)
 
     def derive_weights(self, predictions: dict) -> dict[str, dict]:

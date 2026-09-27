@@ -30,7 +30,7 @@ def _make(tmp_path, workdir="run", **overrides):
 
 
 def test_full_path_runs_linearly_and_curates(tmp_path):
-    sc = _make(tmp_path, seeds_per_metric_set=2)
+    sc = _make(tmp_path, random_seeds_per_metric_set=2)
     manifest = sc.run()
 
     w = json.loads((tmp_path / "run" / "weights.json").read_text())
@@ -44,9 +44,10 @@ def test_full_path_runs_linearly_and_curates(tmp_path):
     used = json.loads((manifest.parent / "weights_used_seed0.json").read_text())
     assert used["algorithm"] == "v15"
 
-    # 4 metrics + random control, 2 seeds each
+    # METRICS is instance-only (feature-based) - deterministic, so each trains once regardless of
+    # random_seeds_per_metric_set; only random_control (randomized) actually repeats, x2 seeds here.
     preds = list((tmp_path / "run" / "tournament").glob("*_predictions.csv"))
-    assert len(preds) == 5 * 2
+    assert len(preds) == len(METRICS) * 1 + 1 * 2
 
 
 def test_tournament_resumes_from_cache(tmp_path):
@@ -176,11 +177,11 @@ model: {{params: {{}}}}
     assert not isinstance(excinfo.value, KeyError)
 
 
-def test_seeds_per_metric_set_must_be_at_least_one(tmp_path):
+def test_random_seeds_per_metric_set_must_be_at_least_one(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
-    with pytest.raises(SynthCuratorError, match="seeds_per_metric_set"):
+    with pytest.raises(SynthCuratorError, match="random_seeds_per_metric_set"):
         SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
-                    real_dir=real_dir, resolution=32, seeds_per_metric_set=0)
+                    real_dir=real_dir, resolution=32, random_seeds_per_metric_set=0)
 
 
 def test_metric_beta_must_be_positive(tmp_path):
@@ -361,7 +362,7 @@ def test_force_retrain_is_forwarded_to_run_tournament(tmp_path, monkeypatch):
     sc = _make(tmp_path, force_retrain=True)
     seen = {}
 
-    def spy(metric_sets, model, out_dir, seeds, force_retrain):
+    def spy(metric_sets, model, out_dir, force_retrain):
         seen["force_retrain"] = force_retrain
         return {}
 

@@ -59,6 +59,33 @@ def test_distributional_metric_set_rejects_a_single_group(tmp_path):
                               {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0])
 
 
+def test_distributional_metric_set_has_one_manifest_per_seed(tmp_path):
+    metadata_csv, features_dir = _build(tmp_path)
+    out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
+                                {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0, 1])
+    assert set(out["kid_dino"].keys()) == {0, 1}
+    assert out["kid_dino"][0] != out["kid_dino"][1]   # distinct files, one per seed
+
+
+def test_distributional_metric_set_uses_the_tournament_seed_not_a_fixed_one(tmp_path, monkeypatch):
+    """Regression: distributional metric sets used to always draw with a hardcoded constant seed,
+    so every tournament repeat trained on identical data - no better than training once."""
+    metadata_csv, features_dir = _build(tmp_path)
+    real_random_per_class = ms._random_per_class
+    seen_seeds = []
+
+    def spy(df, counts, seed):
+        seen_seeds.append(seed)
+        return real_random_per_class(df, counts, seed)
+
+    monkeypatch.setattr(ms, "_random_per_class", spy)
+    ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
+                         {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0, 1, 2])
+    # called once per seed for kid_dino, once per seed for the always-built random_control -
+    # either way, each of 0/1/2 is used as a real draw seed, not one fixed constant repeated 3x
+    assert sorted(seen_seeds) == [0, 0, 1, 1, 2, 2]
+
+
 def test_distributional_metric_set_skipped_without_dist_group_by_columns(tmp_path):
     metadata_csv, features_dir = _build(tmp_path, with_group_col=False)
     out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["kid_dino"],
@@ -90,6 +117,16 @@ def test_instance_metric_set_is_top_n_per_class(tmp_path):
         pool = df[df.target_class_label == cls].sort_values("lpips_score")
         pool_safe = pool["filename"].str.replace("/", "_")
         assert picked_ids == set(pool_safe.head(n))
+
+
+def test_instance_metric_set_trains_once_regardless_of_seed_count(tmp_path):
+    """Regression: instance metrics are deterministic (top-N, no randomness) - they must get
+    exactly one manifest no matter how many tournament seeds are configured, since there's nothing
+    for repeats to average out."""
+    metadata_csv, features_dir = _build(tmp_path)
+    out = ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score"],
+                                {"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0, 1, 2])
+    assert list(out["lpips_score"].keys()) == [0]
 
 
 def test_random_control_draws_a_fresh_set_per_seed(tmp_path):

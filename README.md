@@ -119,12 +119,12 @@ class ImagesFromManifest(Dataset):
 
 class ResNetClassifier:
     """Both methods train a ResNet on the manifest they're given - the only difference is how much
-    training you're willing to pay for. train_and_evaluate runs once per (metric, seed) pair during
-    the tournament - one metric set per metric in your portfolio, plus a random-control baseline -
-    purely to rank metrics, so it stays cheap (few epochs). `seed` lets SynthCurator average out
-    training noise across repeats (its seeds_per_metric_set, default 1); use it or ignore it.
-    train_production runs exactly once, on the final curated set, so it's the one worth doing
-    properly."""
+    training you're willing to pay for. train_and_evaluate runs during the tournament, purely to
+    rank metrics, so it stays cheap (few epochs) - once per instance metric (their curated data is
+    deterministic, nothing to repeat), and once per seed for distributional metrics/random_control
+    (their curated data is redrawn per seed, so `seed` lets SynthCurator average out sampling +
+    training noise there - its random_seeds_per_metric_set, default 1). train_production runs
+    exactly once, on the final curated set, so it's the one worth doing properly."""
 
     def __init__(self, val_dir: str, class_to_idx: dict, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
         self.val_dir, self.class_to_idx, self.device = Path(val_dir), class_to_idx, device
