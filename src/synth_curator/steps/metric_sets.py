@@ -2,8 +2,8 @@
 
 Each metric set isolates ONE metric, so its downstream score says how useful that metric alone is.
     instance metric       top-N per class by the metric (deterministic)
-    distributional metric best generation group by that metric (needs `group_by`), then a random
-                          per-class draw from that group (fixed seed)
+    distributional metric best generation group by that metric (needs `dist_group_by`), then a
+                          random per-class draw from that group (fixed seed)
     random_control        a random per-class draw; a fresh draw per tournament seed (the baseline
                           that random_anchored weights are measured against)
 Port of metric_pipeline/dataset_curation/main.py. Returns {metric_set: {seed: manifest_csv}}.
@@ -48,7 +48,7 @@ def _random_per_class(df: pd.DataFrame, counts: dict[str, int], seed: int) -> pd
 
 
 def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, metrics: list[str],
-                       target_distribution: dict[str, float], num_images: int, group_by: list[str],
+                       target_distribution: dict[str, float], num_images: int, dist_group_by: list[str],
                        seeds: list[int], image_dir: Path | None = None) -> dict[str, dict[int, Path]]:
     out_dir = Path(out_dir)
     df = pd.read_csv(metadata_csv)
@@ -64,10 +64,10 @@ def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, me
     dist_metrics = [m for m in metrics if is_distributional(m)]
     group_raw = None
     if dist_metrics:
-        if group_by and all(c in df.columns for c in group_by):
-            group_raw = compute_group_raw(df, features_dir, group_by, dist_metrics)
+        if dist_group_by and all(c in df.columns for c in dist_group_by):
+            group_raw = compute_group_raw(df, features_dir, dist_group_by, dist_metrics)
         else:
-            log.warning("distributional metric sets %s skipped: they need group_by columns present in the metadata",
+            log.warning("distributional metric sets %s skipped: they need dist_group_by columns present in the metadata",
                         dist_metrics)
 
     for m in metrics:
@@ -75,7 +75,7 @@ def curate_metric_sets(metadata_csv: Path, features_dir: Path, out_dir: Path, me
             if group_raw is None:
                 continue
             best = group_raw[m].idxmin()                       # all distributional metrics: lower is better
-            pool = df[group_key(df, group_by) == best]
+            pool = df[group_key(df, dist_group_by) == best]
             path = write(m, 0, _random_per_class(pool, counts, DIST_METRIC_SET_SEED))
         else:
             if m not in df.columns:

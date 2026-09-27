@@ -4,7 +4,7 @@ safety filter -> per-class instance scores -> group distributional scores -> com
 draw_blocks (temperature) -> [block_search: per-class distributional eval + select best] -> write.
 Port of v15 run_for_arch. Manifest is written BEFORE the logs.
 
-Metadata CSV needs: filename, target_class_label, the `group_by` columns, and one column per
+Metadata CSV needs: filename, target_class_label, the `dist_group_by` columns, and one column per
 instance metric that carries weight.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path, *,
            target_distribution: dict[str, float], num_images: int, temperature: float,
-           group_by: list[str], block_search: bool, num_blocks: int,
+           dist_group_by: list[str], block_search: bool, num_blocks: int,
            safety_max_similarity_threshold: float | None, seed: int,
            image_dir: Path | None = None, min_samples: dict | None = None,
            per_class_normalization: bool = True) -> Path:
@@ -53,7 +53,7 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
     for c in ("filename", "target_class_label"):
         if c not in df.columns:
             raise SynthCuratorError(f"metadata CSV lacks required column {c!r}")
-    keep = ["filename", "target_class_label", *group_by, *all_metrics]
+    keep = ["filename", "target_class_label", *dist_group_by, *all_metrics]
     df = df[[c for c in dict.fromkeys(keep) if c in df.columns]].copy()
 
     if safety_max_similarity_threshold is not None:
@@ -62,20 +62,20 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
                                  cache_path=out_dir.parent / ".safety_maxsim.csv")
 
     group_scores = None
-    if group_by:
-        absent = [c for c in group_by if c not in df.columns]
+    if dist_group_by:
+        absent = [c for c in dist_group_by if c not in df.columns]
         if absent:
-            log.warning("group_by columns %s not in metadata - group terms disabled", absent)
+            log.warning("dist_group_by columns %s not in metadata - group terms disabled", absent)
         else:
             dist_metrics = sorted({m for w in weights.values() for m, v in w.items()
                                    if v > 1e-9 and is_distributional(m)})
             if dist_metrics:
-                group_scores = compute_group_scores(df, features_dir, group_by, dist_metrics,
+                group_scores = compute_group_scores(df, features_dir, dist_group_by, dist_metrics,
                                                     cache_path=out_dir.parent / ".group_scores.csv")
             else:
                 log.info("no distributional metric carries weight - group terms unused")
 
-    df = calculate_per_class_score(df, weights, group_scores, group_by,
+    df = calculate_per_class_score(df, weights, group_scores, dist_group_by,
                                    per_class_bounds=per_class_normalization)
     blocks = draw_blocks(df, target_distribution, num_images, num_blocks, temperature, seed)
 
@@ -96,7 +96,7 @@ def curate(metadata_csv: Path, features_dir: Path, weights: dict, out_dir: Path,
     write_block_log(blocks, out_dir / f".block_log_seed{seed}.csv")
     write_weights_used(out_dir / f"weights_used_seed{seed}.json", weights, {
         "target_distribution": target_distribution, "num_images": num_images, "temperature": temperature,
-        "group_by": group_by, "block_search": block_search, "num_blocks": num_blocks,
+        "dist_group_by": dist_group_by, "block_search": block_search, "num_blocks": num_blocks,
         "safety_max_similarity_threshold": safety_max_similarity_threshold, "seed": seed})
     log.info("curated %d images -> %s", len(optimal_df), manifest)
     return manifest

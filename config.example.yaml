@@ -27,7 +27,7 @@ model:
   params: {}
 
 # ---------------------------------------------------------------- inputs
-# All three required. No precomputed-metadata/features shortcut yet (coming back later).
+# All three required (metadata_csv below is optional).
 inputs:
   # <class_name>/**/<image>, absolute paths used in the final manifest.
   synthetic_dir: /path/to/synthetic_pool
@@ -38,6 +38,9 @@ inputs:
   # The SYNTHETIC pool's generation resolution. Real images are Lanczos-resized to this.
   # Set to whatever your generator produced.
   resolution: 512
+
+  # Optional: filename/target_class_label CSV instead of scanning synthetic_dir for classes.
+  # metadata_csv: /path/to/metadata.csv
 
 # Class proportions (percent, must sum to ~100). The curated set matches this per class.
 target_distribution:
@@ -85,6 +88,9 @@ tournament:
   #   train jobs = (metrics + 1 random control) x seeds_per_metric_set
   seeds_per_metric_set: 1
 
+  # true: ignore cached predictions and retrain everything, e.g. after changing the model.
+  force_retrain: false
+
 # ---------------------------------------------------------------- weights (step 6)
 # Always derived from this run's tournament for now (no bring-your-own-weights option yet).
 weights:
@@ -114,9 +120,9 @@ curation:
   # Sampling probability ~ exp(S/T). Low = greedy, high = near-random. 0.05 was the optimum on ISIC-2018; tune for your domain.
   temperature: 0.05
 
-  # Columns of the metadata CSV that identify a generation group (e.g. generator checkpoint,
-  # guidance scale). Distributional metrics are scored per group. [] disables.
-  group_by: [source_checkpoint_kimg, cfg_scale]
+  # Columns identifying a generation group, scored per group. Distributional metrics only
+  # (fid/kid/swd) - instance metrics are unaffected. [] disables them.
+  dist_group_by: [source_checkpoint_kimg, cfg_scale]
 
   # false: single draw (v15 default). true: draw num_blocks, pick the best per class.
   block_search: false

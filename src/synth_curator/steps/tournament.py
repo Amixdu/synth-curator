@@ -3,7 +3,8 @@
 Training is the user's `Model.train_and_evaluate` (see model_interface.py). One seed per metric set
 (default) is a weighting signal, not a statistical claim; more seeds average out training noise.
 Per-(metric_set, seed) predictions are cached in out_dir so an interrupted tournament resumes.
-Port of final_rerun/scripts/6_tournament_final.py (orchestration only).
+Port of final_rerun/scripts/6_tournament_final.py (orchestration only). `force_retrain` bypasses
+the cache entirely (e.g. after changing the model); cache reuse is always logged otherwise.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ log = logging.getLogger(__name__)
 
 
 def run(metric_sets: dict[str, dict[int, Path]], model: Model, out_dir: Path,
-       seeds: list[int]) -> dict[str, pd.DataFrame]:
+       seeds: list[int], force_retrain: bool = False) -> dict[str, pd.DataFrame]:
     """
     metric_sets: {metric_set_name: {seed: manifest_csv}} — output of steps.metric_sets.curate_metric_sets, e.g.
         {"lpips_score": {0: Path(".../lpips_score.csv")},
@@ -26,6 +27,7 @@ def run(metric_sets: dict[str, dict[int, Path]], model: Model, out_dir: Path,
     model: Model — your classifier (see model_interface.py)
     out_dir: Path — predictions cache root; written to as out_dir/<metric_set>_seed<seed>_predictions.csv
     seeds: [int, ...] — e.g. [0, 1, 2]; one training run per (metric_set, seed)
+    force_retrain: ignore any existing cache and retrain everything, overwriting it
     returns: {metric_set_name: DataFrame[unique_image_id, true_label, predicted_label, seed]}
     """
     out_dir = Path(out_dir)
@@ -34,7 +36,9 @@ def run(metric_sets: dict[str, dict[int, Path]], model: Model, out_dir: Path,
         runs = []
         for seed in seeds:
             cache = out_dir / f"{name}_seed{seed}_predictions.csv"
-            if cache.exists():
+            if cache.exists() and not force_retrain:
+                log.info("reusing cached predictions: metric_set=%s seed=%d (%s) - delete this "
+                        "file, the workdir, or pass force_retrain=True to force a retrain", name, seed, cache)
                 preds = pd.read_csv(cache)
             else:
                 log.info("training metric_set=%s seed=%d", name, seed)

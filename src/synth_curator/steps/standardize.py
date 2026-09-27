@@ -2,11 +2,15 @@
 so metrics compare real and synthetic at the exact pixel grid the generator produced.
 
 `resolution` is REQUIRED - there is no universal default, since it depends entirely on your
-generative model. Output is FLAT: `<stem>.png`; duplicate stems are an error.
+generative model. Output is FLAT: `<flatten_name(path)>.png`, keyed on each image's full relative
+path (not just its bare filename), so e.g. per-patient subfolders with same-named files don't
+collide. `flatten_name` is also used by steps.features._write_real_labels, so the two always agree
+on what a given real image is called - see that function before changing this one.
 """
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +24,13 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 
 def list_images(root: Path) -> list[Path]:
     return sorted(p for p in Path(root).rglob("*") if p.suffix.lower() in IMAGE_EXTS)
+
+
+def flatten_name(path: Path, root: Path) -> str:
+    """A name for `path` unique within `root`, built from its full relative location rather than
+    just its bare filename - so e.g. root/patient_001/x.jpg and root/patient_002/x.jpg don't
+    collide once both are flattened into one directory."""
+    return "__".join(Path(path).relative_to(root).with_suffix("").parts)
 
 
 def center_crop_and_resize(img_path: Path, resolution: int):
@@ -36,17 +47,23 @@ def standardize(real_dir: Path, out_dir: Path, resolution: int) -> Path:
     files = list_images(real_dir)
     if not files:
         raise SynthCuratorError(f"no images (.jpg/.jpeg/.png) under {real_dir}")
-    stems = [f.stem for f in files]
-    dupes = {s for s in stems if stems.count(s) > 1}
+    names = [flatten_name(f, real_dir) for f in files]
+    dupes = {n for n in names if names.count(n) > 1}
     if dupes:
-        raise SynthCuratorError(f"duplicate real image stems (output is flat): {sorted(dupes)[:5]} ...")
+        raise SynthCuratorError(
+            f"two source images flatten to the same name (output is flat): {sorted(dupes)[:5]} ...")
 
     tmp = Path(str(out_dir) + ".partial")      # only rename when complete, so a crash never leaves a half-done dir
     tmp.mkdir(parents=True, exist_ok=True)
-    for f in tqdm(files, desc=f"Standardizing to {resolution}px"):
+    for f, name in tqdm(list(zip(files, names, strict=True)), desc=f"Standardizing to {resolution}px"):
         try:
-            center_crop_and_resize(f, resolution).save(tmp / f"{f.stem}.png")
+            center_crop_and_resize(f, resolution).save(tmp / f"{name}.png")
         except Exception as e:  # noqa: BLE001 - skip unreadable images, report at the end
             log.warning("skipping %s: %s", f, e)
+    if out_dir.exists():
+        # rebuilding into an already-populated out_dir (e.g. resolution changed on a reused
+        # workdir) - os.rename() can't replace a non-empty directory, so clear it first. A crash
+        # here just leaves out_dir absent, which the caller already treats as "needs building".
+        shutil.rmtree(out_dir)
     tmp.rename(out_dir)
     return out_dir

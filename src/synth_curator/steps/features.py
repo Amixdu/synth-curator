@@ -20,7 +20,7 @@ import torch
 
 from ..core.features import feature_path, load_features
 from ..core.geometry import knn_cosine
-from .standardize import list_images
+from .standardize import flatten_name, list_images
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,10 @@ def _inception_embedder():
 
 
 def _write_real_labels(real_dir: Path, out_csv: Path) -> None:
-    rows = [(p.name, p.parent.name) for p in list_images(real_dir) if p.parent != real_dir]
+    # filename must match what standardize() actually named this image (flatten_name + ".png"),
+    # since that's the key its DINOv2/Inception features end up under - not its original name.
+    rows = [(f"{flatten_name(p, real_dir)}.png", p.parent.name)
+            for p in list_images(real_dir) if p.parent != real_dir]
     if rows:
         pd.DataFrame(rows, columns=["filename", "class"]).to_csv(out_csv, index=False)
     else:

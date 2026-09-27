@@ -8,13 +8,13 @@ version = "0.0.1.dev0"
 description = "Utility-weighted curation of synthetic image pools: pick the subset that measurably helps your classifier."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy", "pandas", "scipy", "torch"]
+dependencies = ["numpy", "pandas", "scipy", "torch", "pillow", "tqdm", "torchvision", "transformers", "scikit-image"]
 
 [project.scripts]
 synth-curator = "synth_curator.cli:main"
 
 [project.optional-dependencies]
-full = ["pyyaml", "pillow", "tqdm", "torchvision", "transformers", "scikit-image", "opencv-python", "phasepack", "lpips", "brisque"]
+full = ["opencv-python", "phasepack", "lpips", "brisque"]
 yaml = ["pyyaml"]
 dev = ["pytest", "pyyaml", "ruff"]
 
@@ -25,5 +25,7 @@ packages = ["src/synth_curator"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 
-# Image-based metric calculators (FSIM/LPIPS/BRISQUE/CLIP) and DINOv2/InceptionV3 feature
-# extraction need heavier deps: pip install synth-curator[full]
+# Standardizing, DINOv2/InceptionV3 feature extraction, and most metrics (PSNR/SSIM/CLIP/
+# distributional/feature-based) run on the core dependencies. Only FSIM/LPIPS/BRISQUE need the
+# heavier, calculator-specific deps: pip install synth-curator[full]
+# YAML config files (SynthCurator.from_config, the CLI) need pyyaml: pip install synth-curator[yaml]

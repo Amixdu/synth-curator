@@ -12,12 +12,12 @@ import pytest
 from synth_curator import SynthCurator, model_from_function
 from synth_curator.exceptions import SynthCuratorError
 
-from .conftest import TARGET, build_image_pool, fake_extract_features, fake_model
+from .conftest import TARGET, build_image_pool, fake_extract_features, fake_model, make_image
 
 pytest.importorskip("PIL")
 
 METRICS = ["fscs_score", "realism_score", "diversity_score", "is_contribution_score"]  # feature-based only
-KW = dict(metrics=METRICS, group_by=[], num_images=15, safety_max_similarity_threshold=None)
+KW = dict(metrics=METRICS, dist_group_by=[], num_images=15, safety_max_similarity_threshold=None)
 
 
 def _make(tmp_path, workdir="run", **overrides):
@@ -92,7 +92,7 @@ workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 metrics: {{instance: {METRICS}}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     sc = SynthCurator.from_config(cfg, model=fake_model())
     std_dir = sc.standardize()
@@ -111,7 +111,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
 metrics: {{instance: {METRICS}}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
 
     def exploding(manifest, seed):
@@ -134,6 +134,46 @@ model: {{trainer: tests.conftest:cli_fake_trainer}}
 """)
     with pytest.raises(SynthCuratorError, match="inputs.synthetic_dir.*inputs.real_dir.*inputs.resolution"):
         SynthCurator.from_config(cfg)
+
+
+def test_from_config_missing_workdir_is_a_clear_error_not_a_keyerror(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+""")
+    with pytest.raises(SynthCuratorError, match="workdir") as excinfo:
+        SynthCurator.from_config(cfg)
+    assert not isinstance(excinfo.value, KeyError)
+
+
+def test_from_config_missing_target_distribution_is_a_clear_error_not_a_keyerror(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+""")
+    with pytest.raises(SynthCuratorError, match="target_distribution") as excinfo:
+        SynthCurator.from_config(cfg)
+    assert not isinstance(excinfo.value, KeyError)
+
+
+def test_from_config_model_block_without_trainer_is_a_clear_error_not_a_keyerror(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{params: {{}}}}
+""")
+    with pytest.raises(SynthCuratorError, match="trainer") as excinfo:
+        SynthCurator.from_config(cfg)
+    assert not isinstance(excinfo.value, KeyError)
 
 
 def test_seeds_per_metric_set_must_be_at_least_one(tmp_path):
@@ -198,7 +238,7 @@ workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 weights: {{scoring: tests.conftest:cli_fake_scoring}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     sc = SynthCurator.from_config(cfg, model=fake_model())
     from tests.conftest import cli_fake_scoring
@@ -213,7 +253,7 @@ workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 weights: {{beta: 1.5}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     sc = SynthCurator.from_config(cfg, model=fake_model())
     assert sc.metric_beta == 1.5
@@ -250,6 +290,99 @@ def test_extract_features_step_skips_real_work_on_second_call(tmp_path, monkeypa
     assert sc.extract_features(sc.workdir / "real_standardized") == sc.features_dir
 
 
+# ---- fingerprinting: reusing a workdir after changing inputs must recompute, not go stale -----
+
+def test_standardize_recomputes_when_resolution_changes_on_the_same_workdir(tmp_path):
+    from PIL import Image
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    workdir = tmp_path / "run"
+
+    sc1 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, **KW)
+    out1 = sc1.standardize()
+    assert Image.open(next(out1.iterdir())).size == (32, 32)
+
+    sc2 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=64, **KW)
+    out2 = sc2.standardize()
+    assert Image.open(next(out2.iterdir())).size == (64, 64)   # genuinely recomputed, not stale 32px
+
+
+def test_standardize_still_skips_when_nothing_changed(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    workdir = tmp_path / "run"
+    SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                real_dir=real_dir, resolution=32, **KW).standardize()
+
+    def boom(*a, **kw):
+        raise AssertionError("standardize() should skip real work when its fingerprint still matches")
+    monkeypatch.setattr(pipeline_mod.standardize, "standardize", boom)
+
+    sc2 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, **KW)
+    sc2.standardize()   # same resolution, same dirs - must not call standardize.standardize()
+
+
+def test_extract_features_recomputes_when_synthetic_dir_changes_on_the_same_workdir(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    other_synthetic_dir = tmp_path / "other_synthetic"
+    for cls, seed in (("A", 90), ("B", 91), ("C", 92)):
+        make_image(other_synthetic_dir / cls / "s0.png", seed)
+
+    calls = []
+
+    def fake_extract(std_dir, syn_dir, out_dir, real_dir_arg):
+        calls.append(syn_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "synthetic_dino.pt").write_bytes(b"x")   # the marker the wrapper checks for
+        return out_dir
+
+    monkeypatch.setattr(pipeline_mod.features, "extract_features", fake_extract)
+    workdir = tmp_path / "run"
+
+    sc1 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, **KW)
+    std_dir = sc1.standardize()
+    sc1.extract_features(std_dir)
+
+    sc2 = SynthCurator(workdir, TARGET, model=fake_model(), synthetic_dir=other_synthetic_dir,
+                       real_dir=real_dir, resolution=32, **KW)
+    sc2.extract_features(std_dir)
+
+    assert calls == [synthetic_dir, other_synthetic_dir]   # both ran - the second wasn't silently skipped
+
+
+def test_force_retrain_is_forwarded_to_run_tournament(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    sc = _make(tmp_path, force_retrain=True)
+    seen = {}
+
+    def spy(metric_sets, model, out_dir, seeds, force_retrain):
+        seen["force_retrain"] = force_retrain
+        return {}
+
+    monkeypatch.setattr(pipeline_mod.tournament, "run", spy)
+    sc.run_tournament({})
+    assert seen["force_retrain"] is True
+
+
+def test_from_config_reads_force_retrain(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+tournament: {{force_retrain: true}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+""")
+    sc = SynthCurator.from_config(cfg)
+    assert sc.force_retrain is True
+
+
 def test_from_config_without_a_model_is_a_clear_error(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
     cfg = tmp_path / "c.yaml"
@@ -257,7 +390,7 @@ def test_from_config_without_a_model_is_a_clear_error(tmp_path):
 workdir: {tmp_path / 'run'}
 target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     with pytest.raises(SynthCuratorError, match="model is required"):
         SynthCurator.from_config(cfg)
@@ -286,6 +419,153 @@ def test_validate_rejects_an_empty_synthetic_dir(tmp_path):
     with pytest.raises(SynthCuratorError, match="synthetic_dir"):
         SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=empty,
                     real_dir=real_dir, resolution=32, **KW)
+
+
+def test_validate_rejects_a_target_distribution_class_with_no_matching_synthetic_folder(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)   # classes A, B, C
+    bad_target = {"A": 50.0, "B": 30.0, "Z": 20.0}   # "Z" has no folder under synthetic_dir
+    with pytest.raises(SynthCuratorError, match="Z"):
+        SynthCurator(tmp_path / "r", bad_target, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, **KW)
+
+
+def test_validate_allows_a_zero_percent_class_absent_from_synthetic_dir(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)   # classes A, B, C
+    target = {"A": 50.0, "B": 50.0, "Z": 0.0}   # "Z" is 0% - fine even with no matching folder
+    SynthCurator(tmp_path / "r", target, model=fake_model(), synthetic_dir=synthetic_dir,
+                real_dir=real_dir, resolution=32, **KW)
+
+
+def test_validate_rejects_synthetic_images_with_no_class_folder(tmp_path):
+    real_dir, _ = build_image_pool(tmp_path)
+    flat_synthetic = tmp_path / "flat_synthetic"
+    make_image(flat_synthetic / "img0.png", seed=0)   # directly under root, no class folder
+    with pytest.raises(SynthCuratorError, match="class folder"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=flat_synthetic,
+                    real_dir=real_dir, resolution=32, **KW)
+
+
+# ---- metadata_csv: an alternative to build_metadata()'s folder scan -----------------------
+
+def _write_metadata_csv(path, rows):
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def test_validate_rejects_a_missing_metadata_csv(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="metadata_csv"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, metadata_csv=tmp_path / "nope.csv", **KW)
+
+
+def test_validate_rejects_a_metadata_csv_missing_required_columns(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    csv = _write_metadata_csv(tmp_path / "meta.csv", {"filename": ["a.png"]})   # no target_class_label
+    with pytest.raises(SynthCuratorError, match="target_class_label"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, metadata_csv=csv, **KW)
+
+
+def test_validate_rejects_a_metadata_csv_that_is_not_valid_csv(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    bad = tmp_path / "meta.csv"
+    bad.write_bytes(b"\x00\x01not,a,csv\x02")
+    with pytest.raises(SynthCuratorError, match="metadata_csv"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, metadata_csv=bad, **KW)
+
+
+def test_validate_rejects_a_target_distribution_class_missing_from_metadata_csv(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    csv = _write_metadata_csv(tmp_path / "meta.csv", {
+        "filename": ["a.png", "b.png"], "target_class_label": ["A", "B"]})   # TARGET also needs "C"
+    with pytest.raises(SynthCuratorError, match="C"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, metadata_csv=csv, **KW)
+
+
+def test_validate_with_metadata_csv_does_not_require_synthetic_dir_class_folders(tmp_path):
+    """The class-match check should read the CSV, not synthetic_dir's folders, once metadata_csv
+    is given - so a flat synthetic_dir (no class subfolders at all) is fine here."""
+    real_dir, _ = build_image_pool(tmp_path)
+    flat_synthetic = tmp_path / "flat_synthetic"
+    make_image(flat_synthetic / "img0.png", seed=0)
+    csv = _write_metadata_csv(tmp_path / "meta.csv", {
+        "filename": ["a.png", "b.png", "c.png"], "target_class_label": ["A", "B", "C"]})
+    SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=flat_synthetic,
+                real_dir=real_dir, resolution=32, metadata_csv=csv, **KW)
+
+
+def test_from_config_reads_metadata_csv(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    csv = _write_metadata_csv(tmp_path / "meta.csv", {
+        "filename": ["a.png", "b.png", "c.png"], "target_class_label": ["A", "B", "C"]})
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32, metadata_csv: {csv}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+""")
+    sc = SynthCurator.from_config(cfg, model=fake_model())
+    assert sc.metadata_csv == csv
+
+
+def test_compute_metrics_clears_the_cached_csv_when_metadata_csv_changes(tmp_path, monkeypatch):
+    """pipeline.compute_metrics() always calls steps.metrics.compute_metrics() - unlike
+    standardize()/extract_features() it doesn't skip the call itself, since the real function
+    already resumes incrementally per metric column. What the fingerprint controls is whether the
+    stale CACHED CSV is cleared first, so a changed metadata_csv can't be masked by stale columns."""
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    csv_a = _write_metadata_csv(tmp_path / "meta_a.csv", {"filename": ["a.png"], "target_class_label": ["A"]})
+    csv_b = _write_metadata_csv(tmp_path / "meta_b.csv", {"filename": ["b.png"], "target_class_label": ["B"]})
+    workdir = tmp_path / "run"
+
+    seen_out_csv_existed = []
+
+    def fake_compute_metrics(synthetic_dir, real_std_dir, features_dir, out_csv, metrics, base_metadata=None):
+        seen_out_csv_existed.append(out_csv.exists())
+        out_csv.write_text("filename,target_class_label\nx.png,A\n")
+        return out_csv
+
+    monkeypatch.setattr(pipeline_mod.metrics, "compute_metrics", fake_compute_metrics)
+
+    sc1 = SynthCurator(workdir, {"A": 100.0}, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, metadata_csv=csv_a, **{**KW, "num_images": 1})
+    sc1.compute_metrics(sc1.workdir / "real_standardized", sc1.features_dir)
+
+    sc2 = SynthCurator(workdir, {"B": 100.0}, model=fake_model(), synthetic_dir=synthetic_dir,
+                       real_dir=real_dir, resolution=32, metadata_csv=csv_b, **{**KW, "num_images": 1})
+    sc2.compute_metrics(sc2.workdir / "real_standardized", sc2.features_dir)
+
+    assert seen_out_csv_existed == [False, False]   # second call: cleared first, since metadata_csv changed
+
+
+def test_compute_metrics_does_not_clear_the_cached_csv_when_metadata_csv_is_unchanged(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    csv = _write_metadata_csv(tmp_path / "meta.csv", {"filename": ["a.png"], "target_class_label": ["A"]})
+    workdir = tmp_path / "run"
+
+    seen_out_csv_existed = []
+
+    def fake_compute_metrics(synthetic_dir, real_std_dir, features_dir, out_csv, metrics, base_metadata=None):
+        seen_out_csv_existed.append(out_csv.exists())
+        out_csv.write_text("filename,target_class_label\na.png,A\n")
+        return out_csv
+
+    monkeypatch.setattr(pipeline_mod.metrics, "compute_metrics", fake_compute_metrics)
+
+    def make():
+        return SynthCurator(workdir, {"A": 100.0}, model=fake_model(), synthetic_dir=synthetic_dir,
+                            real_dir=real_dir, resolution=32, metadata_csv=csv, **{**KW, "num_images": 1})
+
+    make().compute_metrics(workdir / "real_standardized", workdir / "features")
+    make().compute_metrics(workdir / "real_standardized", workdir / "features")
+
+    assert seen_out_csv_existed == [False, True]   # second call: out_csv was NOT cleared first - fingerprint matched
 
 
 def test_validate_rejects_a_missing_real_dir(tmp_path):

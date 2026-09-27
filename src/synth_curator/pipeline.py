@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
+import pandas as pd
+
+from .core import fingerprint
 from .core.registry import DEFAULT_METRICS, is_instance, props
 from .exceptions import SynthCuratorError
 from .model_interface import Model, import_dotted, load_model
@@ -50,7 +54,8 @@ class SynthCurator:
         metrics: Sequence[str] = DEFAULT_METRICS,   # the portfolio the tournament sweeps
         num_images: int = 8012,
         temperature: float = 0.05,
-        group_by: Sequence[str] = ("source_checkpoint_kimg", "cfg_scale"),
+        dist_group_by: Sequence[str] = ("source_checkpoint_kimg", "cfg_scale"),  # distributional metrics only
+        metadata_csv: str | Path | None = None,       # CSV (filename, target_class_label, ...) instead of scanning synthetic_dir
         block_search: bool = False,
         num_blocks: int = 1,
         safety_max_similarity_threshold: float | None = 0.97,
@@ -62,6 +67,7 @@ class SynthCurator:
         metric_beta: float = 2.0,                    # the beta in F-beta the tournament scores by; 2.0 = F2
         scoring: ScoringFn | None = None,             # override: (true, pred, classes) -> {class: score};
                                                        # replaces F-beta entirely, and metric_beta is then unused
+        force_retrain: bool = False,                  # ignore the tournament's prediction cache, e.g. after changing the model
     ):
         if seeds_per_metric_set < 1:
             raise SynthCuratorError("seeds_per_metric_set must be >= 1")
@@ -82,7 +88,8 @@ class SynthCurator:
         self.metrics = list(metrics)
         self.num_images = num_images
         self.temperature = temperature
-        self.group_by = list(group_by)
+        self.dist_group_by = list(dist_group_by)
+        self.metadata_csv = Path(metadata_csv) if metadata_csv is not None else None
         self.block_search = block_search
         self.num_blocks = num_blocks
         self.safety_max_similarity_threshold = safety_max_similarity_threshold
@@ -93,6 +100,7 @@ class SynthCurator:
         self.seeds = [seed + i for i in range(seeds_per_metric_set)]
         self.metric_beta = metric_beta
         self.scoring = scoring
+        self.force_retrain = force_retrain
         self.workdir.mkdir(parents=True, exist_ok=True)
         self._validate()
 
@@ -102,11 +110,15 @@ class SynthCurator:
         after standardizing/embedding/scoring the whole pool."""
         if not callable(getattr(self.model, "train_and_evaluate", None)):
             raise SynthCuratorError("model must implement train_and_evaluate(train_manifest, seed) -> DataFrame")
+        synthetic_images = None
         for name, path in (("synthetic_dir", self.synthetic_dir), ("real_dir", self.real_dir)):
             if not path.is_dir():
                 raise SynthCuratorError(f"{name} does not exist or is not a directory: {path}")
-            if not standardize.list_images(path):
+            images = standardize.list_images(path)
+            if not images:
                 raise SynthCuratorError(f"{name} has no images (.jpg/.jpeg/.png) anywhere under it: {path}")
+            if name == "synthetic_dir":
+                synthetic_images = images
         if self.resolution <= 0:
             raise SynthCuratorError(f"resolution must be a positive integer, got {self.resolution}")
         if any(v < 0 for v in self.target_distribution.values()):
@@ -114,6 +126,31 @@ class SynthCurator:
         total = sum(self.target_distribution.values())
         if abs(total - 100) > 1.0:
             raise SynthCuratorError(f"target_distribution must sum to ~100 (percent), got {total}")
+        if self.metadata_csv is not None:
+            if not self.metadata_csv.is_file():
+                raise SynthCuratorError(f"metadata_csv does not exist or is not a file: {self.metadata_csv}")
+            try:
+                meta_df = pd.read_csv(self.metadata_csv)
+            except Exception as e:  # noqa: BLE001 - any parse failure is a clear config error, not a crash
+                raise SynthCuratorError(f"metadata_csv could not be read as a CSV: {self.metadata_csv} ({e})") from e
+            missing_cols = {"filename", "target_class_label"} - set(meta_df.columns)
+            if missing_cols:
+                raise SynthCuratorError(
+                    f"metadata_csv is missing required column(s) {sorted(missing_cols)}: {self.metadata_csv}")
+            present = set(meta_df["target_class_label"].astype(str))
+            source = f"metadata_csv ({self.metadata_csv})"
+        else:
+            flat = [p for p in synthetic_images if len(p.relative_to(self.synthetic_dir).parts) < 2]
+            if flat:
+                raise SynthCuratorError(
+                    f"synthetic_dir must be laid out as <class_name>/<image>, but found images directly "
+                    f"under {self.synthetic_dir} with no class folder (e.g. {flat[0].name})")
+            present = {p.relative_to(self.synthetic_dir).parts[0] for p in synthetic_images}
+            source = f"synthetic_dir folders ({self.synthetic_dir})"
+        wanted = {c for c, pct in self.target_distribution.items() if pct > 0}
+        missing = sorted(wanted - present)
+        if missing:
+            raise SynthCuratorError(f"target_distribution has class(es) not found in {source}: {missing}")
         for name, formula in (("utility_formula", self.utility_formula), ("dist_utility_formula", self.dist_utility_formula)):
             if formula is not None and formula not in weights.FORMULAS:
                 raise SynthCuratorError(f"{name} must be one of {sorted(weights.FORMULAS)} or None, got {formula!r}")
@@ -144,6 +181,9 @@ class SynthCurator:
         curation_cfg = config.get("curation", {})
         model_cfg = config.get("model")
         if model_cfg is not None:
+            if "trainer" not in model_cfg:
+                raise SynthCuratorError("config's model: block needs a 'trainer' key "
+                                        "(a dotted 'package.module:ClassOrFactory' path)")
             model = load_model(model_cfg["trainer"], model_cfg.get("params"))
         if model is None:
             raise SynthCuratorError("a model is required: add a config 'model:' block, or pass model=... here")
@@ -154,7 +194,8 @@ class SynthCurator:
         kw = dict(
             model=model, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
             num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
-            group_by=curation_cfg.get("group_by", ["source_checkpoint_kimg", "cfg_scale"]),
+            dist_group_by=curation_cfg.get("dist_group_by", ["source_checkpoint_kimg", "cfg_scale"]),
+            metadata_csv=inputs_cfg.get("metadata_csv"),
             block_search=curation_cfg.get("block_search", False), num_blocks=curation_cfg.get("num_blocks", 1),
             safety_max_similarity_threshold=curation_cfg.get("safety_max_similarity_threshold", 0.97),
             utility_formula=weights_cfg.get("utility_formula", "worst_anchored"),
@@ -163,9 +204,13 @@ class SynthCurator:
             seed=config.get("seed", 0), seeds_per_metric_set=config.get("tournament", {}).get("seeds_per_metric_set", 1),
             metric_beta=weights_cfg.get("beta", 2.0),
             scoring=import_dotted(weights_cfg["scoring"]) if weights_cfg.get("scoring") else None,
+            force_retrain=config.get("tournament", {}).get("force_retrain", False),
         )
         if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
             kw["metrics"] = [*metrics_cfg.get("instance", []), *metrics_cfg.get("distributional", [])]
+        for key in ("workdir", "target_distribution"):
+            if key not in config:
+                raise SynthCuratorError(f"config is missing the required {key!r} key")
         return cls(config["workdir"], config["target_distribution"], **kw)
 
     # ---- steps ------------------------------------------------------------------------------
@@ -173,32 +218,55 @@ class SynthCurator:
     def standardize(self) -> Path:
         """1. Resize real images to the pool's generation resolution."""
         out = self.workdir / "real_standardized"
-        if out.exists():
+        current = {"real_dir": str(self.real_dir), "resolution": self.resolution}
+        stale = fingerprint.exists(out) and not fingerprint.matches(out, current)
+        if out.exists() and not stale:
             return out
-        return standardize.standardize(self.real_dir, out, self.resolution)
+        if stale:
+            log.info("real_dir or resolution changed since %s was last built - recomputing", out)
+        result = standardize.standardize(self.real_dir, out, self.resolution)
+        fingerprint.write(result, current)
+        return result
 
     def extract_features(self, std_dir: Path) -> Path:
         """2. DINOv2/Inception features, probabilities, KNN map, real labels."""
-        if (self.features_dir / "synthetic_dino.pt").exists():
+        current = {"synthetic_dir": str(self.synthetic_dir), "real_dir": str(self.real_dir)}
+        stale = fingerprint.exists(self.features_dir) and not fingerprint.matches(self.features_dir, current)
+        if (self.features_dir / "synthetic_dino.pt").exists() and not stale:
             return self.features_dir
-        return features.extract_features(std_dir, self.synthetic_dir, self.features_dir, self.real_dir)
+        if stale:
+            log.info("synthetic_dir or real_dir changed since %s was last built - recomputing", self.features_dir)
+            shutil.rmtree(self.features_dir)
+        result = features.extract_features(std_dir, self.synthetic_dir, self.features_dir, self.real_dir)
+        fingerprint.write(result, current)
+        return result
 
     def compute_metrics(self, std_dir: Path, features_dir: Path, wanted: Sequence[str] | None = None) -> Path:
         """3. Instance-metric columns -> metadata CSV. Returns the cached CSV untouched if it already has them all."""
         instance_metrics = [metric for metric in (wanted if wanted is not None else self.metrics)
                             if is_instance(metric)]
-        return metrics.compute_metrics(
-            self.synthetic_dir, std_dir, features_dir, self.workdir / "metadata.csv", instance_metrics)
+        out_csv = self.workdir / "metadata.csv"
+        current = {"metadata_csv": str(self.metadata_csv) if self.metadata_csv else None,
+                  "synthetic_dir": str(self.synthetic_dir)}
+        if out_csv.exists() and fingerprint.exists(out_csv) and not fingerprint.matches(out_csv, current):
+            log.info("metadata source changed since %s was last built - recomputing", out_csv)
+            out_csv.unlink()
+        result = metrics.compute_metrics(
+            self.synthetic_dir, std_dir, features_dir, out_csv, instance_metrics,
+            base_metadata=self.metadata_csv)
+        fingerprint.write(result, current)
+        return result
 
     def curate_metric_sets(self, metadata_csv: Path, features_dir: Path) -> dict[str, dict[int, Path]]:
         """4. One curated dataset per metric + random control."""
         return metric_sets.curate_metric_sets(
             metadata_csv, features_dir, self.workdir / "metric_sets", self.metrics,
-            self.target_distribution, self.num_images, self.group_by, self.seeds, self.synthetic_dir)
+            self.target_distribution, self.num_images, self.dist_group_by, self.seeds, self.synthetic_dir)
 
     def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
         """5. Train/eval your model on each metric set."""
-        return tournament.run(metric_sets, self.model, self.workdir / "tournament", self.seeds)
+        return tournament.run(metric_sets, self.model, self.workdir / "tournament", self.seeds,
+                              force_retrain=self.force_retrain)
 
     def derive_weights(self, predictions: dict) -> dict[str, dict]:
         """6. Per-class utility weights from the tournament predictions, scored with `scoring`
@@ -221,7 +289,7 @@ class SynthCurator:
         return curate.curate(                                      # 7
             metadata_csv, features_dir, resolved_weights, self.workdir / "curated",
             target_distribution=self.target_distribution, num_images=self.num_images,
-            temperature=self.temperature, group_by=self.group_by,
+            temperature=self.temperature, dist_group_by=self.dist_group_by,
             block_search=self.block_search, num_blocks=self.num_blocks,
             safety_max_similarity_threshold=self.safety_max_similarity_threshold, seed=self.seed,
             image_dir=self.synthetic_dir, min_samples=self.dist_min_samples)

@@ -1,7 +1,7 @@
 """Group distributional scores: one score per (generation group, distributional metric),
 normalized to [0,1] across groups (1.0 = best), inherited by every image in the group.
 
-Port of v15 compute_group_scores. Computed live from feature tensors so any `group_by`
+Port of v15 compute_group_scores. Computed live from feature tensors so any `dist_group_by`
 partition works. Groups are large enough that FID is well estimated (per-class it is not).
 Group scores are global (all classes pooled); how much a class trusts them is per class (weights).
 """

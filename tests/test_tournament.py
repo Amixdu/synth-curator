@@ -44,6 +44,42 @@ def test_run_propagates_synth_curator_error_for_bad_predictions(tmp_path):
         tournament.run({"lpips_score": {0: manifest}}, model_from_function(fn), tmp_path / "tournament", [0])
 
 
+def test_run_logs_when_reusing_a_cached_prediction(tmp_path, caplog):
+    def fn(manifest, seed):
+        return pd.DataFrame({"unique_image_id": ["a.png"], "true_label": ["A"], "predicted_label": ["A"]})
+
+    manifest = _manifest(tmp_path)
+    metric_sets = {"lpips_score": {0: manifest}}
+    out_dir = tmp_path / "tournament"
+    tournament.run(metric_sets, model_from_function(fn), out_dir, [0])
+
+    with caplog.at_level("INFO"):
+        tournament.run(metric_sets, model_from_function(fn), out_dir, [0])
+    assert "reusing cached predictions" in caplog.text
+    assert "lpips_score" in caplog.text
+
+
+def test_force_retrain_bypasses_the_cache(tmp_path):
+    calls = []
+
+    def fn(manifest, seed):
+        calls.append(seed)
+        return pd.DataFrame({"unique_image_id": ["a.png"], "true_label": ["A"], "predicted_label": ["A"]})
+
+    manifest = _manifest(tmp_path)
+    metric_sets = {"lpips_score": {0: manifest}}
+    out_dir = tmp_path / "tournament"
+
+    tournament.run(metric_sets, model_from_function(fn), out_dir, [0])
+    assert calls == [0]
+
+    tournament.run(metric_sets, model_from_function(fn), out_dir, [0], force_retrain=True)
+    assert calls == [0, 0]   # retrained despite the existing cache file
+
+    tournament.run(metric_sets, model_from_function(fn), out_dir, [0])
+    assert calls == [0, 0]   # back to normal: the freshly-overwritten cache is reused again
+
+
 def test_run_trains_once_per_seed_per_metric_set(tmp_path):
     calls = []
 

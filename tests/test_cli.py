@@ -24,7 +24,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
 metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     from synth_curator import SynthCurator
     from .conftest import cli_fake_trainer
@@ -43,7 +43,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer}}
 metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
 
     # pre-seed features: DINOv2/InceptionV3 extraction needs network + heavy deps not available here
@@ -69,7 +69,7 @@ target_distribution: {{A: 50, B: 30, C: 20}}
 inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
 model: {{trainer: tests.conftest:cli_fake_trainer_with_production}}
 metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contribution_score]}}
-curation: {{num_images: 15, group_by: [], safety_max_similarity_threshold: null}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     from synth_curator import SynthCurator
     from .conftest import cli_fake_trainer_with_production

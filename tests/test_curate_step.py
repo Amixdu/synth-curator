@@ -8,7 +8,7 @@ from synth_curator.exceptions import MissingMetricsError, SynthCuratorError
 from synth_curator.steps import curate as curate_mod
 
 TARGET = {"A": 50.0, "B": 50.0}
-BASE_KW = dict(target_distribution=TARGET, num_images=4, temperature=0.1, group_by=[],
+BASE_KW = dict(target_distribution=TARGET, num_images=4, temperature=0.1, dist_group_by=[],
               block_search=False, num_blocks=1, safety_max_similarity_threshold=None, seed=0)
 
 
@@ -95,7 +95,7 @@ def test_curate_with_distributional_weight_uses_group_scores(tmp_path):
     out_dir = tmp_path / "curated"
     weights = {"A": {"psnr_score": 0.5, "kid_dino": 0.5}, "B": {"psnr_score": 0.5, "kid_dino": 0.5}}
     manifest = curate_mod.curate(metadata_csv, features_dir, weights, out_dir,
-                                 **{**BASE_KW, "group_by": ["grp"]})
+                                 **{**BASE_KW, "dist_group_by": ["grp"]})
     df = pd.read_csv(manifest)
     assert df["target_class"].value_counts().to_dict() == {"A": 2, "B": 2}
     assert (out_dir.parent / ".group_scores.csv").exists()

@@ -32,20 +32,21 @@ sequenceDiagram
     Note over SC: full path only, no bring-your-own-weights yet - run() is one flat sequence, each step's output threaded explicitly into the next, no step pulls its own input. train_production() calls this same run() internally before doing anything extra
 
     SC->>STD: standardize() [step 1]
-    Note right of STD: skip and return immediately if workdir/real_standardized already exists
+    Note right of STD: skip if real_standardized exists and its fingerprint (real_dir, resolution) matches, else recompute
     STD-->>SC: std_dir
 
     SC->>FEAT: extract_features(std_dir) [step 2]
-    Note right of FEAT: skip and return immediately if synthetic_dino.pt already exists
+    Note right of FEAT: skip if synthetic_dino.pt exists and the fingerprint (synthetic_dir, real_dir) matches, else recompute
     FEAT-->>SC: features_dir (dino, inception, probs, knn_map, real_labels)
 
     SC->>MET: compute_metrics(std_dir, features_dir) [step 3]
+    Note right of MET: base metadata is metadata_csv if set, else scanned from synthetic_dir folders - a changed fingerprint clears the cached CSV first
     MET->>MET: paired.py / single_image.py / from_features.py calculators, each skipping columns already computed
     MET-->>SC: metadata_csv
 
     SC->>MS: curate_metric_sets(metadata_csv, features_dir) [step 4]
-    opt distributional metrics configured and group_by columns present
-        MS->>GRP: compute_group_raw(df, features_dir, group_by, dist_metrics)
+    opt distributional metrics configured and dist_group_by columns present
+        MS->>GRP: compute_group_raw(df, features_dir, dist_group_by, dist_metrics)
         GRP-->>MS: raw FID / KID / SWD per generation group
     end
     MS->>MS: per instance metric: top-N per class
@@ -56,9 +57,9 @@ sequenceDiagram
     SC->>TOUR: run_tournament(metric_sets) [step 5]
     loop each metric_set x each seed
         TOUR->>TOUR: check cache {metric_set}_seed{seed}_predictions.csv
-        alt predictions already cached
-            TOUR-->>TOUR: load predictions.csv
-        else not cached
+        alt predictions already cached and not force_retrain
+            TOUR-->>TOUR: load predictions.csv, log the reuse
+        else not cached, or force_retrain
             TOUR->>MODEL: train_and_evaluate(manifest_csv, seed)
             MODEL-->>TOUR: predictions (unique_image_id, true_label, predicted_label)
             TOUR->>TOUR: validate columns, cache to disk

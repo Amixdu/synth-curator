@@ -83,7 +83,14 @@ def import_dotted(path: str) -> Any:
     module, _, attr = path.partition(":")
     if not attr:
         raise SynthCuratorError(f"{path!r} must look like 'package.module:Name'")
-    return getattr(importlib.import_module(module), attr)
+    try:
+        imported = importlib.import_module(module)
+    except ImportError as e:
+        raise SynthCuratorError(f"{path!r}: could not import module {module!r} ({e})") from e
+    try:
+        return getattr(imported, attr)
+    except AttributeError:
+        raise SynthCuratorError(f"{path!r}: module {module!r} has no attribute {attr!r}") from None
 
 
 def load_model(trainer: str, params: dict[str, Any] | None = None) -> Model:

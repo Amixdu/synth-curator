@@ -26,9 +26,14 @@ uses the result to build one final, per-class-weighted curated set.
 ## Install
 
 ```bash
-pip install synth-curator             # core: enough to run the pipeline with feature-based metrics
-pip install synth-curator[full]       # + PSNR/SSIM/FSIM/LPIPS/BRISQUE/CLIP calculators
+pip install synth-curator             # the pipeline + most of the metric portfolio
+pip install synth-curator[full]       # + FSIM/LPIPS/BRISQUE calculators
+pip install synth-curator[yaml]       # + YAML config files / the CLI
 ```
+
+The default metric portfolio (see Metrics below) includes FSIM/LPIPS/BRISQUE, so `[full]` is
+needed to run `SynthCurator` with its defaults; pass `metrics=[...]` to use only core-dependency
+metrics instead.
 
 ## The idea, in one picture
 
@@ -175,7 +180,7 @@ sc = SynthCurator(
     real_dir="real_reference",
     resolution=512,               # your generator's output resolution
     num_images=2000,               # images in the final curated set
-    group_by=[],                   # no generation-group metadata? leave this empty
+    dist_group_by=[],               # no generation-group metadata for distributional metrics? leave this empty
 )
 ```
 
@@ -183,12 +188,54 @@ Construction validates everything up front — a missing directory, an empty one
 `train_and_evaluate`, or a `target_distribution` that doesn't sum to ~100 all raise immediately
 here, before any standardizing, feature extraction, or training happens.
 
+Classes normally come from `synthetic_dir`'s folder names. Instead, you can pass `metadata_csv=`,
+a CSV with exactly three kinds of column:
+
+- `filename` (required) — matches a file under `synthetic_dir`
+- `target_class_label` (required) — that image's class
+- your `dist_group_by` columns (optional) — only needed if you're using distributional metrics
+  (`fid_inception`/`kid_dino`/`swd_dino`) and want to group by something folders can't express
+
+Any other column is ignored. The images still need to exist under `synthetic_dir` either way —
+`metadata_csv` only changes where class labels come from.
+
 The tournament scores each metric set's predictions with F-beta by default (`metric_beta=2.0` =
 F2, favoring recall). Pass a different `metric_beta` for a different F-beta, or replace the
 metric entirely with `scoring=my_function`, a function `(true_labels, pred_labels, classes) ->
 {class_name: score}` you write yourself (`metric_beta` is then unused - construction raises if
 you set both). Whatever you pick, use the exact same computation in your model's own checkpoint
 selection too if it has one, so "best during training" and "best per the tournament" agree.
+
+### Or: classes from a CSV instead of folders
+
+Say your generator was run twice, and you want `fid_inception`/`kid_dino`/`swd_dino` scored per
+run instead of over the whole pool — `generation_batch` isn't something a folder name can carry,
+so it goes in a CSV instead:
+
+```
+filename,               target_class_label, generation_batch
+cats/img0001.png,       cats,                run_a
+cats/img0002.png,       cats,                run_a
+dogs/img0001.png,       dogs,                run_b
+dogs/img0002.png,       dogs,                run_b
+```
+
+```python
+sc = SynthCurator(
+    workdir="runs/cats_vs_dogs",
+    target_distribution={"cats": 50.0, "dogs": 50.0},
+    model=ResNetClassifier(val_dir="real_reference_holdout", class_to_idx=class_to_idx),
+    synthetic_dir="synthetic_pool",
+    real_dir="real_reference",
+    resolution=512,
+    num_images=2000,
+    metadata_csv="metadata.csv",           # instead of scanning synthetic_dir's folders
+    dist_group_by=["generation_batch"],     # a column metadata_csv provides, not synthetic_dir
+)
+```
+
+Everything from here on (`sc.run()`, `sc.train_production()`, the config/CLI route) works exactly
+the same either way — this only changes how step 3 gets its classes.
 
 ### 4. Get the curated set and the derived weights
 
@@ -245,7 +292,7 @@ inputs:
   resolution: 512
 curation:
   num_images: 2000
-  group_by: []
+  dist_group_by: []
 ```
 
 ```bash
@@ -270,8 +317,8 @@ The default portfolio (override with `metrics=[...]`):
 | `brisqe_score`, `clip_similarity_*`, `clip_log_odds_score` | `kid_dino` |
 | `fscs_score`, `diversity_score`, `realism_score`, `is_contribution_score` | `swd_dino` |
 
-`fsim_score`/`lpips_score`/`brisqe_score`/`clip_*` need the `[full]` extra (`phasepack`, `lpips`,
-`brisque`, `transformers`). Everything else needs only `torch`/`torchvision`/`scikit-image`.
+`fsim_score`/`lpips_score`/`brisqe_score` need the `[full]` extra (`opencv-python`, `phasepack`,
+`lpips`, `brisque`). Everything else - including `clip_*` - runs on the core dependencies.
 Add your own by registering it in `synth_curator.core.registry.METRIC_PROPERTIES` and a calculator
 in `synth_curator.steps.metrics`.
 
@@ -290,7 +337,7 @@ src/synth_curator/
     tournament.py         5. train/evaluate your model on each one
     weights.py            6. per-class utility weights from the results
     curate.py             7. final weighted, temperature-sampled curated set
-  core/                 shared math: scoring, FID/KID/SWD, sampling, safety, groups, registry
+  core/                 shared math: scoring, FID/KID/SWD, sampling, safety, groups, registry, fingerprint
 ```
 
 `run()` is fully linear — each step's output is threaded explicitly into the next, with no step

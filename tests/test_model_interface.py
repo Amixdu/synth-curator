@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from synth_curator.exceptions import SynthCuratorError
-from synth_curator.model_interface import check_predictions, load_model, model_from_function
+from synth_curator.model_interface import check_predictions, import_dotted, load_model, model_from_function
 
 
 def test_check_predictions_passes_through_a_valid_frame():
@@ -32,6 +32,20 @@ def test_load_model_dotted_path_calls_class_with_params():
 def test_load_model_rejects_a_path_without_a_colon():
     with pytest.raises(SynthCuratorError, match="must look like"):
         load_model("tests.conftest.cli_fake_trainer")
+
+
+def test_import_dotted_wraps_a_bad_module_as_synth_curator_error_not_import_error():
+    with pytest.raises(SynthCuratorError) as excinfo:
+        import_dotted("no_such_module_at_all:something")
+    assert not isinstance(excinfo.value, ImportError)
+    assert "no_such_module_at_all" in str(excinfo.value)
+
+
+def test_import_dotted_wraps_a_bad_attribute_as_synth_curator_error_not_attribute_error():
+    with pytest.raises(SynthCuratorError) as excinfo:
+        import_dotted("tests.conftest:no_such_attribute_at_all")
+    assert not isinstance(excinfo.value, AttributeError)
+    assert "no_such_attribute_at_all" in str(excinfo.value)
 
 
 def test_model_from_function_wraps_a_plain_callable():
