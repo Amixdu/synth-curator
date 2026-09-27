@@ -105,6 +105,9 @@ class _GpuFakeModel:
         return pd.DataFrame({"unique_image_id": m["safe_filename"], "true_label": t,
                              "predicted_label": t, "gpu_id": self.gpu_id})
 
+    def train_production(self, manifest):
+        return {"gpu_id": self.gpu_id, "trained_on": str(manifest)}
+
 
 def cli_fake_model_factory(gpu_id, **params):
     """model_factory=... for multi-GPU tournament tests - module-level so it's picklable both

@@ -32,6 +32,11 @@ model:
   # once overall - MyModel needs to accept that gpu_id keyword and put itself on that device.
   # gpu_ids: [0, 1, 2, 3]
 
+  # Optional, only with gpu_ids above: which GPU trains the final model in train_production() -
+  # defaults to gpu_ids[0]. Set this if you want that one (expensive, worth doing properly) run on
+  # a different GPU than any of the tournament's, e.g. a bigger one.
+  # production_gpu_id: 0
+
 # ---------------------------------------------------------------- inputs
 # All three required (metadata_csv and pool_workdir below is optional).
 inputs:

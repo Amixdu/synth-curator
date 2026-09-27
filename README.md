@@ -337,7 +337,10 @@ synth-curator config.yaml --train-production
 `trainer` is a dotted `module:ClassOrFactory` path, called with `params` — so the CLI never needs
 your model object in memory, just an import path to it. Add `gpu_ids: [0, 1, ...]` under `model:`
 to run the tournament across that many GPU workers instead (see `config.example.yaml`) — `trainer`
-is then called once per worker as `trainer(**params, gpu_id=<id>)`, so it needs to accept that keyword.
+is then called once per worker as `trainer(**params, gpu_id=<id>)`, so it needs to accept that
+keyword. `--train-production` still works with `gpu_ids` set: a plain instance (bound to
+`gpu_ids[0]` by default, or `production_gpu_id` if you set it) is built the same way,
+automatically, since the CLI has no Python object to pass in.
 
 ## Metrics
 

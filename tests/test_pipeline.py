@@ -177,7 +177,10 @@ model: {{params: {{}}}}
     assert not isinstance(excinfo.value, KeyError)
 
 
-def test_from_config_model_gpu_ids_builds_a_factory_not_a_plain_model(tmp_path):
+def test_from_config_model_gpu_ids_builds_a_factory_and_a_plain_model(tmp_path):
+    """train_production() needs a plain model=..., and the CLI never has a Python object to pass -
+    so from_config builds one too, the same way a worker would (bound to gpu_ids[0]), whenever no
+    model=... was already given."""
     real_dir, synthetic_dir = build_image_pool(tmp_path)
     cfg = tmp_path / "c.yaml"
     cfg.write_text(f"""
@@ -189,14 +192,14 @@ curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: 
 model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0, 1]}}
 """)
     sc = SynthCurator.from_config(cfg)
-    assert sc.model is None
+    assert sc.model is not None and sc.model.gpu_id == 0   # bound to gpu_ids[0]
     assert sc.gpu_ids == [0, 1]
-    assert sc.model_factory(0).gpu_id == 0
+    assert sc.model_factory(1).gpu_id == 1
 
 
-def test_from_config_model_gpu_ids_keeps_the_python_model_arg_for_train_production(tmp_path):
-    """A plain model= passed to from_config() is for train_production() only once the config's
-    model: block has gpu_ids - it must not be discarded."""
+def test_from_config_model_gpu_ids_keeps_an_explicit_python_model_arg(tmp_path):
+    """An explicitly-passed model= must win over auto-building one from trainer/params - it's
+    already the exact instance the caller wants for train_production()."""
     real_dir, synthetic_dir = build_image_pool(tmp_path)
     cfg = tmp_path / "c.yaml"
     cfg.write_text(f"""
@@ -211,6 +214,58 @@ model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0]}}
     sc = SynthCurator.from_config(cfg, model=deploy_model)
     assert sc.model is deploy_model
     assert sc.gpu_ids == [0]
+
+
+def test_from_config_model_gpu_ids_train_production_works_without_a_python_model_arg(tmp_path):
+    """The concrete case this all exists for: `synth-curator config.yaml --train-production` never
+    has a Python model= to pass, so this has to work from the config alone."""
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0]}}
+""")
+    sc = SynthCurator.from_config(cfg)   # no model= - exactly what the CLI does
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+    assert sc.train_production() == {"gpu_id": 0, "trained_on": str(sc.run())}
+
+
+def test_from_config_production_gpu_id_overrides_gpu_ids_zero(tmp_path):
+    """production_gpu_id lets the final training run use a different GPU than any of the
+    tournament's (e.g. a bigger one) - not just whichever happens to be first in gpu_ids."""
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0, 1], production_gpu_id: 7}}
+""")
+    sc = SynthCurator.from_config(cfg)
+    assert sc.model.gpu_id == 7
+    assert sc.gpu_ids == [0, 1]         # the tournament pool is unaffected
+
+
+def test_from_config_production_gpu_id_without_gpu_ids_is_a_clear_error(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+model: {{trainer: tests.conftest:cli_fake_model_factory, production_gpu_id: 7}}
+""")
+    with pytest.raises(SynthCuratorError, match="production_gpu_id needs model.gpu_ids"):
+        SynthCurator.from_config(cfg)
 
 
 def test_random_seeds_per_metric_set_must_be_at_least_one(tmp_path):

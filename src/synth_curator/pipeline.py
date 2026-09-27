@@ -203,8 +203,10 @@ class SynthCurator:
     def from_config(cls, path: str | Path, model: Model | None = None) -> SynthCurator:
         """Build from config.example.yaml-style YAML. `model` (a Python object) is used if the
         config's `model:` block is absent; if both are given, the config's `model:` wins. If the
-        config's `model.gpu_ids` is set, the config's `trainer` becomes a GPU-worker factory
-        instead, and the `model` argument here (if given) is kept for train_production() only."""
+        config's `model.gpu_ids` is set, `trainer` becomes a GPU-worker factory instead, and a
+        plain instance (for train_production()) is also built the same way, bound to
+        `model.production_gpu_id` (or gpu_ids[0] if that's not set) - unless `model` was already
+        given here, which is kept as-is."""
         import yaml
         config = yaml.safe_load(Path(path).read_text())
         inputs_cfg = config.get("inputs", {})
@@ -218,10 +220,22 @@ class SynthCurator:
                 raise SynthCuratorError("config's model: block needs a 'trainer' key "
                                         "(a dotted 'package.module:ClassOrFactory' path)")
             gpu_ids = model_cfg.get("gpu_ids")
+            production_gpu_id = model_cfg.get("production_gpu_id")
+            if production_gpu_id is not None and not gpu_ids:
+                raise SynthCuratorError(
+                    "model.production_gpu_id needs model.gpu_ids too - there's no parallel "
+                    "tournament here for it to pick a GPU apart from")
             if gpu_ids:
-                # trainer(**params, gpu_id=...) is called once per worker, not once here - your
-                # trainer needs to accept that gpu_id keyword.
+                # trainer(**params, gpu_id=...) is called once per tournament worker, not once here
+                # - your trainer needs to accept that gpu_id keyword.
                 model_factory = load_model_factory(model_cfg["trainer"], model_cfg.get("params"))
+                if model is None:
+                    # train_production() needs a plain instance too, and the CLI never passes one
+                    # (there's no Python object to pass) - build one the same way a worker would,
+                    # on production_gpu_id if you set it (e.g. a bigger GPU, for the one training
+                    # run that's worth being expensive), else just the first tournament GPU. An
+                    # explicitly-passed model=... here is left alone either way.
+                    model = model_factory(production_gpu_id if production_gpu_id is not None else gpu_ids[0])
             else:
                 model = load_model(model_cfg["trainer"], model_cfg.get("params"))
         if model is None and model_factory is None:
