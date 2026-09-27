@@ -22,6 +22,15 @@ your validation split, GPUs - is yours in both methods. A plain function works t
 one: `model_from_function(fn)`. One SynthCurator run uses exactly one model; if you want to
 compare classifiers, use a separate workdir per model.
 
+The tournament's training jobs are fully independent (different data, no shared state), so if
+you have multiple GPUs, you can run them across GPU worker processes instead of one after another:
+pass `model_factory` (a `(gpu_id) -> Model` callable, called once per worker) and `gpu_ids` to
+SynthCurator instead of `model`. `model_factory` has to be a module-level, importable callable -
+workers are spawned as fresh processes, so it's pickled into each one, the same constraint the
+config route's `trainer` dotted path already has. `train_production()` still needs a plain
+`model=` instance (it's one training run, not a place multi-GPU dispatch helps) - pass both if you
+want both.
+
 If either method picks a checkpoint internally (e.g. best-of-N epochs), pick it by the same
 metric the tournament scores predictions with - by default F-beta (`SynthCurator(...,
 metric_beta=...)`, default 2.0 = F2), or whatever you passed as `SynthCurator(..., scoring=...)`
@@ -77,6 +86,9 @@ def model_from_function(fn: Callable[[Path, int], pd.DataFrame]) -> Model:
     return _FunctionModel(fn)
 
 
+ModelFactory = Callable[[int], Model]
+
+
 def import_dotted(path: str) -> Any:
     """'package.module:attr' -> the attribute itself, uncalled. Shared by every config field that
     names Python code by dotted path (a model trainer, a custom weights.scoring function, ...)."""
@@ -96,6 +108,25 @@ def import_dotted(path: str) -> Any:
 def load_model(trainer: str, params: dict[str, Any] | None = None) -> Model:
     """Config route: `trainer` is a dotted path 'package.module:ClassOrFactory', called with **params."""
     return import_dotted(trainer)(**(params or {}))
+
+
+class _ConfigModelFactory:
+    """load_model_factory's return value: a class, not a closure, so it's picklable into a
+    spawned GPU worker process (a nested function isn't)."""
+
+    def __init__(self, trainer: str, params: dict[str, Any] | None):
+        self.trainer = trainer
+        self.params = params or {}
+
+    def __call__(self, gpu_id: int) -> Model:
+        return import_dotted(self.trainer)(**self.params, gpu_id=gpu_id)
+
+
+def load_model_factory(trainer: str, params: dict[str, Any] | None = None) -> ModelFactory:
+    """Config route, multi-GPU: like load_model, but returns a factory instead of building the
+    model once - called as trainer(**params, gpu_id=<worker's id>), once per GPU worker. Your
+    class/function needs to accept that `gpu_id` keyword when model.gpu_ids is set in the config."""
+    return _ConfigModelFactory(trainer, params)
 
 
 def check_predictions(df: pd.DataFrame) -> pd.DataFrame:

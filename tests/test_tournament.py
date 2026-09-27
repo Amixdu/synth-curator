@@ -5,6 +5,7 @@ import pytest
 from synth_curator.exceptions import SynthCuratorError
 from synth_curator.model_interface import model_from_function
 from synth_curator.steps import tournament
+from tests.conftest import cli_fake_failing_model_factory, cli_fake_model_factory, cli_fake_recording_model_factory
 
 
 def _manifest(tmp_path, name="m.csv"):
@@ -93,3 +94,53 @@ def test_run_trains_once_per_seed_per_metric_set(tmp_path):
     assert sorted(calls) == [("m1.csv", 0), ("m1.csv", 1), ("m2.csv", 0), ("m2.csv", 1)]
     assert set(result["lpips_score"]["seed"]) == {0, 1}
     assert len(result["lpips_score"]) == 2
+
+
+def test_run_parallel_trains_every_job_and_caches_predictions(tmp_path):
+    m1, m2 = _manifest(tmp_path, "m1.csv"), _manifest(tmp_path, "m2.csv")
+    metric_sets = {"lpips_score": {0: m1, 1: m1}, "random_control": {0: m2, 1: m2}}
+    out_dir = tmp_path / "tournament"
+
+    result = tournament.run_parallel(metric_sets, cli_fake_model_factory, [0, 1], out_dir)
+
+    assert set(result["lpips_score"]["seed"]) == {0, 1}
+    assert len(result["lpips_score"]) == 2
+    for name, seed in (("lpips_score", 0), ("lpips_score", 1), ("random_control", 0), ("random_control", 1)):
+        assert (out_dir / f"{name}_seed{seed}_predictions.csv").exists()
+
+
+def test_run_parallel_reuses_cached_predictions_on_a_second_call(tmp_path):
+    manifest = _manifest(tmp_path)
+    metric_sets = {"lpips_score": {0: manifest}}
+    out_dir = tmp_path / "tournament"
+
+    result1 = tournament.run_parallel(metric_sets, cli_fake_model_factory, [0], out_dir)
+    cache = out_dir / "lpips_score_seed0_predictions.csv"
+    written_at = cache.stat().st_mtime_ns
+
+    result2 = tournament.run_parallel(metric_sets, cli_fake_model_factory, [0], out_dir)
+    assert cache.stat().st_mtime_ns == written_at   # not rewritten: cache hit, no worker spawned
+    pd.testing.assert_frame_equal(
+        result1["lpips_score"].reset_index(drop=True), result2["lpips_score"].reset_index(drop=True))
+
+
+def test_run_parallel_starts_one_worker_per_gpu_id(tmp_path, monkeypatch):
+    """Every id in gpu_ids gets its own worker process (each builds its model up front, before
+    pulling any job) - independent of how job-count fairness happens to land, which real wall-clock
+    process-startup timing makes nondeterministic to assert on directly."""
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    monkeypatch.setenv("SYNTH_CURATOR_TEST_MARKER_DIR", str(marker_dir))
+
+    manifest = _manifest(tmp_path)
+    tournament.run_parallel({"lpips_score": {0: manifest}}, cli_fake_recording_model_factory, [0, 1],
+                            tmp_path / "tournament")
+
+    assert {p.name for p in marker_dir.iterdir()} == {"0", "1"}
+
+
+def test_run_parallel_raises_synth_curator_error_when_a_worker_job_fails(tmp_path):
+    manifest = _manifest(tmp_path)
+    with pytest.raises(SynthCuratorError, match="boom"):
+        tournament.run_parallel(
+            {"lpips_score": {0: manifest}}, cli_fake_failing_model_factory, [0], tmp_path / "tournament")

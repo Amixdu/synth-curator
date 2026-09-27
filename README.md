@@ -252,6 +252,12 @@ Sweeping over `target_distribution` (or the model) with a separate `workdir` per
 don't depend on either — pass the same `pool_workdir` to each `SynthCurator` and they'll only be
 built once, shared across the sweep, instead of re-standardizing the same pool every time.
 
+Have multiple GPUs? The tournament's training jobs are fully independent, so instead of `model=`,
+pass `model_factory` (a `(gpu_id) -> Model` function, called once per worker) and `gpu_ids=[0, 1,
+...]`, and they run across GPU worker processes instead of one after another. `model_factory` has
+to be a module-level function, not a lambda or a nested one — it's pickled into each worker.
+`train_production()` still needs a plain `model=` instance; pass both if you want both.
+
 ### 4. Get the curated set and the derived weights
 
 ```python
@@ -329,7 +335,9 @@ synth-curator config.yaml --train-production
 ```
 
 `trainer` is a dotted `module:ClassOrFactory` path, called with `params` — so the CLI never needs
-your model object in memory, just an import path to it.
+your model object in memory, just an import path to it. Add `gpu_ids: [0, 1, ...]` under `model:`
+to run the tournament across that many GPU workers instead (see `config.example.yaml`) — `trainer`
+is then called once per worker as `trainer(**params, gpu_id=<id>)`, so it needs to accept that keyword.
 
 ## Metrics
 

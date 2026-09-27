@@ -27,6 +27,11 @@ model:
   trainer: my_project.training:MyModel
   params: {}
 
+  # Optional: run the tournament's training jobs across GPU workers instead of one after another.
+  # Set this and `trainer` is called once PER WORKER as MyModel(**params, gpu_id=<id>) instead of
+  # once overall - MyModel needs to accept that gpu_id keyword and put itself on that device.
+  # gpu_ids: [0, 1, 2, 3]
+
 # ---------------------------------------------------------------- inputs
 # All three required (metadata_csv and pool_workdir below is optional).
 inputs:

@@ -2,7 +2,8 @@ import pandas as pd
 import pytest
 
 from synth_curator.exceptions import SynthCuratorError
-from synth_curator.model_interface import check_predictions, import_dotted, load_model, model_from_function
+from synth_curator.model_interface import (
+    check_predictions, import_dotted, load_model, load_model_factory, model_from_function)
 
 
 def test_check_predictions_passes_through_a_valid_frame():
@@ -46,6 +47,18 @@ def test_import_dotted_wraps_a_bad_attribute_as_synth_curator_error_not_attribut
         import_dotted("tests.conftest:no_such_attribute_at_all")
     assert not isinstance(excinfo.value, AttributeError)
     assert "no_such_attribute_at_all" in str(excinfo.value)
+
+
+def test_load_model_factory_calls_trainer_with_gpu_id_per_worker():
+    factory = load_model_factory("tests.conftest:cli_fake_model_factory", params=None)
+    model = factory(3)
+    assert model.gpu_id == 3
+
+
+def test_load_model_factory_forwards_params_alongside_gpu_id():
+    factory = load_model_factory("tests.conftest:cli_fake_model_factory", params={"arch": "resnet50"})
+    model = factory(1)   # doesn't raise on the extra kwarg, and gpu_id still lands correctly
+    assert model.gpu_id == 1
 
 
 def test_model_from_function_wraps_a_plain_callable():

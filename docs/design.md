@@ -56,6 +56,7 @@ sequenceDiagram
     MS-->>SC: metric_sets {metric_name: {seed: manifest.csv}} - instance metrics have one seed key, distributional/random_control have one per random_seeds_per_metric_set
 
     SC->>TOUR: run_tournament(metric_sets) [step 5]
+    Note right of TOUR: one process, one after another - or, with model_factory+gpu_ids,<br/>one GPU worker process per id, each building its own model once and<br/>pulling jobs off a shared queue
     loop each metric_set x each of its own seeds
         TOUR->>TOUR: check cache {metric_set}_seed{seed}_predictions.csv
         alt predictions already cached and not force_retrain

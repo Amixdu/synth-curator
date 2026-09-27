@@ -81,7 +81,7 @@ def test_tournament_resumes_from_cache(tmp_path):
 
 def test_model_is_required(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
-    with pytest.raises(TypeError):
+    with pytest.raises(SynthCuratorError, match="a model is required"):
         SynthCurator(tmp_path / "r", TARGET, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **KW)
 
 
@@ -175,6 +175,42 @@ model: {{params: {{}}}}
     with pytest.raises(SynthCuratorError, match="trainer") as excinfo:
         SynthCurator.from_config(cfg)
     assert not isinstance(excinfo.value, KeyError)
+
+
+def test_from_config_model_gpu_ids_builds_a_factory_not_a_plain_model(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0, 1]}}
+""")
+    sc = SynthCurator.from_config(cfg)
+    assert sc.model is None
+    assert sc.gpu_ids == [0, 1]
+    assert sc.model_factory(0).gpu_id == 0
+
+
+def test_from_config_model_gpu_ids_keeps_the_python_model_arg_for_train_production(tmp_path):
+    """A plain model= passed to from_config() is for train_production() only once the config's
+    model: block has gpu_ids - it must not be discarded."""
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+model: {{trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0]}}
+""")
+    deploy_model = fake_model()
+    sc = SynthCurator.from_config(cfg, model=deploy_model)
+    assert sc.model is deploy_model
+    assert sc.gpu_ids == [0]
 
 
 def test_random_seeds_per_metric_set_must_be_at_least_one(tmp_path):
@@ -489,6 +525,55 @@ def test_validate_rejects_a_model_without_train_and_evaluate(tmp_path):
     with pytest.raises(SynthCuratorError, match="train_and_evaluate"):
         SynthCurator(tmp_path / "r", TARGET, model=object(), synthetic_dir=synthetic_dir,
                     real_dir=real_dir, resolution=32, **KW)
+
+
+def test_init_rejects_model_factory_without_gpu_ids(tmp_path):
+    from tests.conftest import cli_fake_model_factory
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="model_factory needs gpu_ids"):
+        SynthCurator(tmp_path / "r", TARGET, model_factory=cli_fake_model_factory, synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, **KW)
+
+
+def test_init_rejects_gpu_ids_without_model_factory(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="gpu_ids needs model_factory"):
+        SynthCurator(tmp_path / "r", TARGET, model=fake_model(), gpu_ids=[0, 1], synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, **KW)
+
+
+def test_init_rejects_a_non_callable_model_factory(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="model_factory must be callable"):
+        SynthCurator(tmp_path / "r", TARGET, model_factory="not callable", gpu_ids=[0], synthetic_dir=synthetic_dir,
+                    real_dir=real_dir, resolution=32, **KW)
+
+
+def test_model_factory_and_gpu_ids_accepted_without_a_plain_model(tmp_path):
+    from tests.conftest import cli_fake_model_factory
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    sc = SynthCurator(tmp_path / "r", TARGET, model_factory=cli_fake_model_factory, gpu_ids=[0, 1],
+                      synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **KW)
+    assert sc.model is None
+    assert sc.gpu_ids == [0, 1]
+
+
+def test_run_tournament_dispatches_to_run_parallel_when_model_factory_is_set(tmp_path, monkeypatch):
+    from synth_curator import pipeline as pipeline_mod
+    from tests.conftest import cli_fake_model_factory
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    sc = SynthCurator(tmp_path / "r", TARGET, model_factory=cli_fake_model_factory, gpu_ids=[0, 1],
+                      synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **KW)
+    seen = {}
+
+    def spy(metric_sets, model_factory, gpu_ids, out_dir, force_retrain):
+        seen["model_factory"], seen["gpu_ids"] = model_factory, gpu_ids
+        return {}
+
+    monkeypatch.setattr(pipeline_mod.tournament, "run_parallel", spy)
+    sc.run_tournament({})
+    assert seen["model_factory"] is cli_fake_model_factory
+    assert seen["gpu_ids"] == [0, 1]
 
 
 def test_validate_rejects_a_missing_synthetic_dir(tmp_path):
@@ -875,6 +960,17 @@ def test_train_production_rejects_a_model_without_it_before_doing_any_work(tmp_p
     monkeypatch.setattr(sc, "run", boom)
 
     with pytest.raises(SynthCuratorError, match="train_production"):
+        sc.train_production()
+
+
+def test_train_production_rejects_a_model_factory_only_construction(tmp_path):
+    """model_factory-built models aren't kept around after the tournament - train_production()
+    needs a plain model=... instance too."""
+    from tests.conftest import cli_fake_model_factory
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    sc = SynthCurator(tmp_path / "r", TARGET, model_factory=cli_fake_model_factory, gpu_ids=[0],
+                      synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **KW)
+    with pytest.raises(SynthCuratorError, match="plain model"):
         sc.train_production()
 
 

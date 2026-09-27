@@ -36,7 +36,7 @@ import pandas as pd
 from .core import fingerprint
 from .core.registry import DEFAULT_METRICS, is_distributional, is_instance, props
 from .exceptions import SynthCuratorError
-from .model_interface import Model, import_dotted, load_model
+from .model_interface import Model, ModelFactory, import_dotted, load_model, load_model_factory
 from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
 from .steps.weights import ScoringFn
 
@@ -49,7 +49,9 @@ class SynthCurator:
         workdir: str | Path,
         target_distribution: dict[str, float],      # class -> percent, sums to ~100
         *,
-        model: Model,                                # your classifier
+        model: Model | None = None,                  # your classifier; required unless model_factory is set
+        model_factory: ModelFactory | None = None,    # (gpu_id) -> Model, for the tournament's GPU workers - see model_interface.py
+        gpu_ids: Sequence[int] | None = None,         # required with model_factory: which GPU each worker uses
         synthetic_dir: str | Path,                   # <class>/**/<image>
         real_dir: str | Path,                        # reference set, <class>/<image>
         resolution: int,                             # synthetic pool's generation resolution
@@ -73,6 +75,18 @@ class SynthCurator:
                                                        # replaces F-beta entirely, and metric_beta is then unused
         force_retrain: bool = False,                  # ignore the tournament's prediction cache, e.g. after changing the model
     ):
+        if model is None and model_factory is None:
+            raise SynthCuratorError("a model is required: pass model=... (one instance, trained "
+                                    "sequentially), or model_factory=...+gpu_ids=... (a fresh model "
+                                    "per GPU worker, trained in parallel)")
+        if model_factory is not None and not gpu_ids:
+            raise SynthCuratorError("model_factory needs gpu_ids too - which GPU each worker "
+                                    "should use, e.g. gpu_ids=[0, 1, 2, 3]")
+        if gpu_ids and model_factory is None:
+            raise SynthCuratorError("gpu_ids needs model_factory too - a plain model= is one "
+                                    "instance, so there's nothing to build a fresh copy from per GPU worker")
+        if model_factory is not None and not callable(model_factory):
+            raise SynthCuratorError("model_factory must be callable: (gpu_id) -> Model")
         if random_seeds_per_metric_set < 1:
             raise SynthCuratorError("random_seeds_per_metric_set must be >= 1")
         if metric_beta <= 0:
@@ -86,6 +100,8 @@ class SynthCurator:
         self.target_distribution = target_distribution
         self.classes = sorted(target_distribution)
         self.model = model
+        self.model_factory = model_factory
+        self.gpu_ids = list(gpu_ids) if gpu_ids else None
         self.synthetic_dir = Path(synthetic_dir)
         self.real_dir = Path(real_dir)
         self.resolution = resolution
@@ -114,7 +130,9 @@ class SynthCurator:
         """Check everything the pipeline needs is actually present, before any expensive work
         runs - directories with no images or a model missing a method should fail here, not
         after standardizing/embedding/scoring the whole pool."""
-        if not callable(getattr(self.model, "train_and_evaluate", None)):
+        # model_factory's models aren't built until a GPU worker starts, so this can only check
+        # the plain model= route upfront - a bad model_factory surfaces at the first training job instead.
+        if self.model is not None and not callable(getattr(self.model, "train_and_evaluate", None)):
             raise SynthCuratorError("model must implement train_and_evaluate(train_manifest, seed) -> DataFrame")
         synthetic_images = None
         for name, path in (("synthetic_dir", self.synthetic_dir), ("real_dir", self.real_dir)):
@@ -184,7 +202,9 @@ class SynthCurator:
     @classmethod
     def from_config(cls, path: str | Path, model: Model | None = None) -> SynthCurator:
         """Build from config.example.yaml-style YAML. `model` (a Python object) is used if the
-        config's `model:` block is absent; if both are given, the config's `model:` wins."""
+        config's `model:` block is absent; if both are given, the config's `model:` wins. If the
+        config's `model.gpu_ids` is set, the config's `trainer` becomes a GPU-worker factory
+        instead, and the `model` argument here (if given) is kept for train_production() only."""
         import yaml
         config = yaml.safe_load(Path(path).read_text())
         inputs_cfg = config.get("inputs", {})
@@ -192,19 +212,27 @@ class SynthCurator:
         weights_cfg = config.get("weights", {})
         curation_cfg = config.get("curation", {})
         model_cfg = config.get("model")
+        model_factory, gpu_ids = None, None
         if model_cfg is not None:
             if "trainer" not in model_cfg:
                 raise SynthCuratorError("config's model: block needs a 'trainer' key "
                                         "(a dotted 'package.module:ClassOrFactory' path)")
-            model = load_model(model_cfg["trainer"], model_cfg.get("params"))
-        if model is None:
+            gpu_ids = model_cfg.get("gpu_ids")
+            if gpu_ids:
+                # trainer(**params, gpu_id=...) is called once per worker, not once here - your
+                # trainer needs to accept that gpu_id keyword.
+                model_factory = load_model_factory(model_cfg["trainer"], model_cfg.get("params"))
+            else:
+                model = load_model(model_cfg["trainer"], model_cfg.get("params"))
+        if model is None and model_factory is None:
             raise SynthCuratorError("a model is required: add a config 'model:' block, or pass model=... here")
         synthetic_dir, real_dir, resolution = (
             inputs_cfg.get("synthetic_dir"), inputs_cfg.get("real_dir"), inputs_cfg.get("resolution"))
         if not (synthetic_dir and real_dir and resolution):
             raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
         kw = dict(
-            model=model, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
+            model=model, model_factory=model_factory, gpu_ids=gpu_ids,
+            synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
             pool_workdir=inputs_cfg.get("pool_workdir"),
             num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
             dist_group_by=curation_cfg.get("dist_group_by", ["source_checkpoint_kimg", "cfg_scale"]),
@@ -288,7 +316,11 @@ class SynthCurator:
         return result
 
     def run_tournament(self, metric_sets: dict[str, dict[int, Path]]):
-        """5. Train/eval your model on each metric set."""
+        """5. Train/eval your model on each metric set - across GPU workers if model_factory/gpu_ids
+        are set, one process otherwise."""
+        if self.model_factory is not None:
+            return tournament.run_parallel(metric_sets, self.model_factory, self.gpu_ids,
+                                           self.workdir / "tournament", force_retrain=self.force_retrain)
         return tournament.run(metric_sets, self.model, self.workdir / "tournament",
                               force_retrain=self.force_retrain)
 
@@ -339,7 +371,15 @@ class SynthCurator:
         Needs your model to additionally implement train_production(train_manifest) -> Any -
         checked before any curation work happens. The return value is entirely yours (a checkpoint
         path, a wrapped model, anything); the library never inspects it, just passes it back.
+
+        Needs a plain model=... instance, even if you're using model_factory+gpu_ids for the
+        tournament - a factory-built model isn't kept around after the tournament ends, so pass
+        both if you want the parallel tournament and train_production().
         """
+        if self.model is None:
+            raise SynthCuratorError(
+                "train_production() needs a plain model=... instance - pass model=... alongside "
+                "model_factory=...+gpu_ids=... if you also want the parallel tournament")
         if not callable(getattr(self.model, "train_production", None)):
             raise SynthCuratorError(
                 "train_production() needs your model to implement train_production(train_manifest) -> Any, "

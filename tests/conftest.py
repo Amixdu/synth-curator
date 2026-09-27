@@ -92,6 +92,51 @@ def cli_fake_scoring(true_labels, pred_labels, classes):
     return {c: 0.0 for c in classes}
 
 
+class _GpuFakeModel:
+    """A Model that records which gpu_id built it - module-level and attribute-only (no closures),
+    so it pickles into a spawned GPU worker process."""
+
+    def __init__(self, gpu_id):
+        self.gpu_id = gpu_id
+
+    def train_and_evaluate(self, manifest, seed):
+        m = pd.read_csv(manifest)
+        t = m["target_class"].values
+        return pd.DataFrame({"unique_image_id": m["safe_filename"], "true_label": t,
+                             "predicted_label": t, "gpu_id": self.gpu_id})
+
+
+def cli_fake_model_factory(gpu_id, **params):
+    """model_factory=... for multi-GPU tournament tests - module-level so it's picklable both
+    passed directly and via a dotted `trainer:` config path (tests.conftest:cli_fake_model_factory).
+    Accepts (and ignores) extra params, like a real trainer would."""
+    return _GpuFakeModel(gpu_id)
+
+
+class _FailingModel:
+    def train_and_evaluate(self, manifest, seed):
+        raise ValueError("boom")
+
+
+def cli_fake_failing_model_factory(gpu_id):
+    """model_factory=... that always raises - for testing run_parallel's error propagation.
+    Module-level so it's picklable into a spawned GPU worker process."""
+    return _FailingModel()
+
+
+def cli_fake_recording_model_factory(gpu_id):
+    """model_factory=... that touches MARKER_DIR/<gpu_id> when built - each worker builds its model
+    exactly once, up front, regardless of how many jobs land on it, so this proves every id in
+    gpu_ids got its own worker without depending on job-count fairness (which real wall-clock
+    process-startup timing makes nondeterministic to assert on directly)."""
+    import os
+    from pathlib import Path
+    marker_dir = os.environ.get("SYNTH_CURATOR_TEST_MARKER_DIR")
+    if marker_dir:
+        (Path(marker_dir) / str(gpu_id)).touch()
+    return _GpuFakeModel(gpu_id)
+
+
 @pytest.fixture
 def image_pool(tmp_path):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
