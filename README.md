@@ -342,6 +342,24 @@ keyword. `--train-production` still works with `gpu_ids` set: a plain instance (
 `gpu_ids[0]` by default, or `production_gpu_id` if you set it) is built the same way,
 automatically, since the CLI has no Python object to pass in.
 
+### Precomputed weights
+
+Already know good per-class metric weights — yours from an earlier run, or one shipped with the
+library — and want to skip the tournament (steps 4-6) entirely?
+
+```python
+sc = SynthCurator(..., shipped_weights="isic2018_swin_b")   # or weights_path="/my/weights_bundle"
+manifest_path = sc.run()
+```
+
+No `model=` needed unless you also want `train_production()` — `train_and_evaluate` is never
+called in this mode, so the only thing a model can be used for here is that. `metrics`,
+`utility_formula`/`dist_utility_formula`/`metric_beta`/`scoring`, and `random_seeds_per_metric_set`/
+`force_retrain` all don't apply (there's no tournament to run or derive weights from) and raise if
+set. See `config.example.shipped.yaml` for the config/CLI shape, `weights_bundle.py` for the
+`weights.json`+`meta.json` bundle format (to bring your own), and
+`weights_bundle.list_shipped_weights()` for what's shipped.
+
 ## Metrics
 
 The default portfolio (override with `metrics=[...]`, a flat list of names — the YAML config's
@@ -371,6 +389,8 @@ drop via `metrics=[...]`. Add your own by registering it in
 src/synth_curator/
   pipeline.py          SynthCurator: run() and train_production() (see below)
   model_interface.py   Model (required) / ProductionModel (+ train_production, optional)
+  weights_bundle.py     weights_path=/shipped_weights= - precomputed weights, skips steps 4-6
+  shipped/               one directory per shipped bundle (weights.json + meta.json)
   cli.py                synth-curator config.yaml
   steps/                one file per pipeline step
     standardize.py      1. resize real images to the pool's generation resolution
@@ -390,11 +410,6 @@ them; they exist for optional type-checking and documentation only.
 reaching upward to pull its own input. Everything is validated up front, before step 1 ever runs.
 `docs/design.md` has the exact, verified call sequence as a Mermaid diagram, including
 `train_production()` and which parts are skipped when their output already exists.
-
-## Coming up
-
-- **Bring your own weights.** Every run currently derives weights from a fresh tournament against
-  your model. Passing in precomputed weights, skipping the tournament entirely, is coming up.
 
 ## Development
 

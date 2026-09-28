@@ -12,7 +12,7 @@ import pytest
 from synth_curator import SynthCurator, model_from_function
 from synth_curator.exceptions import SynthCuratorError
 
-from .conftest import TARGET, build_image_pool, fake_extract_features, fake_model, make_image
+from .conftest import TARGET, build_image_pool, build_weights_bundle, fake_extract_features, fake_model, make_image
 
 pytest.importorskip("PIL")
 
@@ -1054,3 +1054,269 @@ def test_train_production_curates_then_delegates_and_returns_whatever_the_model_
     manifest = model.calls[0]
     assert manifest.name == "seed_0.csv" and len(pd.read_csv(manifest)) == 15
     assert result == {"checkpoint": "not/a/real/path.pt", "trained_on": str(manifest)}
+
+
+# ---- weights_path / shipped_weights (precomputed weights - skip the tournament) -----------
+
+PRECOMPUTED_KW = dict(dist_group_by=[], num_images=15, safety_max_similarity_threshold=None)   # no metrics= - that's forbidden here
+
+
+class _ProductionOnlyModel:
+    """No train_and_evaluate at all - valid with weights_path/shipped_weights set, since
+    train_and_evaluate is never called there; the only thing model=... is for is train_production()."""
+
+    def __init__(self):
+        self.calls = []
+
+    def train_production(self, train_manifest):
+        self.calls.append(train_manifest)
+        return {"trained_on": str(train_manifest)}
+
+
+def _make_precomputed(tmp_path, bundle_dir, **overrides):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    kw = dict(dist_group_by=[], num_images=15, safety_max_similarity_threshold=None,
+             weights_path=bundle_dir, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32)
+    kw.update(overrides)
+    sc = SynthCurator(tmp_path / "run", TARGET, **kw)
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+    return sc
+
+
+def test_weights_path_and_shipped_weights_are_mutually_exclusive(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    with pytest.raises(SynthCuratorError, match="can't both be set"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, shipped_weights="isic2018_swin_b",
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_model_is_optional_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    sc = _make_precomputed(tmp_path, bundle)
+    assert sc.model is None
+
+
+def test_unknown_shipped_weights_name_lists_whats_available(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match=r"not found - available: \[.*isic2018_swin_b.*\]"):
+        SynthCurator(tmp_path / "run", TARGET, shipped_weights="bogus_preset_name",
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_model_factory_forbidden_with_weights_path(tmp_path):
+    from tests.conftest import cli_fake_model_factory
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="model_factory/gpu_ids don't apply"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, model_factory=cli_fake_model_factory,
+                    gpu_ids=[0], synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_random_seeds_per_metric_set_forbidden_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="random_seeds_per_metric_set/force_retrain"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, random_seeds_per_metric_set=2,
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_force_retrain_forbidden_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="random_seeds_per_metric_set/force_retrain"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, force_retrain=True,
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_utility_formula_forbidden_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="utility_formula/dist_utility_formula/metric_beta/scoring"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, utility_formula="mean_anchored",
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_metric_beta_forbidden_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="utility_formula/dist_utility_formula/metric_beta/scoring"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, metric_beta=1.0,
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_metrics_forbidden_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="metrics doesn't apply"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, metrics=METRICS,
+                    dist_group_by=[], num_images=15, safety_max_similarity_threshold=None,
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32)
+
+
+def test_metrics_defaults_from_the_bundle_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    sc = _make_precomputed(tmp_path, bundle)
+    assert sc.metrics == METRICS
+
+
+def test_classes_mismatch_between_bundle_and_target_distribution_is_a_clear_error(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", ["X", "Y", "Z"], METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="classes"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle,
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_model_needing_only_train_production_is_valid_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    sc = _make_precomputed(tmp_path, bundle, model=_ProductionOnlyModel())
+    assert isinstance(sc.model, _ProductionOnlyModel)   # didn't raise for lacking train_and_evaluate
+
+
+def test_model_without_train_production_is_a_clear_error_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    with pytest.raises(SynthCuratorError, match="train_production"):
+        SynthCurator(tmp_path / "run", TARGET, weights_path=bundle, model=object(),
+                    synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **PRECOMPUTED_KW)
+
+
+def test_resolve_weights_uses_the_bundle_and_skips_the_tournament(tmp_path, monkeypatch):
+    weights = {c: {m: float(i) for i, m in enumerate(METRICS)} for c in TARGET}
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS, weights=weights)
+    sc = _make_precomputed(tmp_path, bundle)
+
+    def boom(*a, **kw):
+        raise AssertionError("no tournament should run with weights_path set")
+    monkeypatch.setattr(sc, "curate_metric_sets", boom)
+    monkeypatch.setattr(sc, "run_tournament", boom)
+    monkeypatch.setattr(sc, "derive_weights", boom)
+
+    metadata_csv = sc.compute_metrics(sc.standardize(), sc.features_dir)
+    resolved = sc.resolve_weights(metadata_csv, sc.features_dir)
+    assert resolved == weights
+    assert json.loads((sc.workdir / "weights.json").read_text()) == weights
+    assert (sc.workdir / "weights_source.json").is_file()
+
+
+def test_run_end_to_end_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    sc = _make_precomputed(tmp_path, bundle)
+    manifest = sc.run()
+    assert len(pd.read_csv(manifest)) == 15
+    assert not (sc.workdir / "metric_sets").exists()   # step 4 never ran
+    assert not (sc.workdir / "tournament").exists()    # step 5 never ran
+
+
+def test_train_production_works_with_weights_path(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    model = _ProductionOnlyModel()
+    sc = _make_precomputed(tmp_path, bundle, model=model)
+    result = sc.train_production()
+    assert len(model.calls) == 1
+    assert result == {"trained_on": str(model.calls[0])}
+
+
+# ---- from_config: weights_path / shipped_weights -------------------------------------------
+
+def _write_precomputed_config(tmp_path, bundle_dir, extra_yaml="", model_yaml=""):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+weights_path: {bundle_dir}
+{model_yaml}
+{extra_yaml}
+""")
+    return cfg
+
+
+def test_from_config_weights_path_forbids_tournament_block(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle, extra_yaml="tournament: {force_retrain: true}")
+    with pytest.raises(SynthCuratorError, match="tournament"):
+        SynthCurator.from_config(cfg)
+
+
+def test_from_config_weights_path_forbids_weights_block(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle, extra_yaml="weights: {beta: 1.0}")
+    with pytest.raises(SynthCuratorError, match="weights"):
+        SynthCurator.from_config(cfg)
+
+
+def test_from_config_weights_path_forbids_metrics_instance(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle, extra_yaml=f"metrics: {{instance: {METRICS}}}")
+    with pytest.raises(SynthCuratorError, match="metrics.instance"):
+        SynthCurator.from_config(cfg)
+
+
+def test_from_config_weights_path_allows_metrics_dist_min_samples(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle, extra_yaml="metrics: {dist_min_samples: {fid: 10}}")
+    sc = SynthCurator.from_config(cfg)
+    assert sc.dist_min_samples == {"fid": 10}
+
+
+def test_from_config_weights_path_forbids_model_gpu_ids(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle,
+                                    model_yaml="model: {trainer: tests.conftest:cli_fake_model_factory, gpu_ids: [0]}")
+    with pytest.raises(SynthCuratorError, match="model.gpu_ids"):
+        SynthCurator.from_config(cfg)
+
+
+def test_from_config_weights_path_model_trainer_builds_a_plain_model(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle,
+                                    model_yaml="model: {trainer: tests.conftest:cli_fake_trainer_with_production}")
+    sc = SynthCurator.from_config(cfg)
+    assert sc.model is not None
+    assert sc.model_factory is None
+
+
+def test_from_config_weights_path_model_is_optional(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    cfg = _write_precomputed_config(tmp_path, bundle)
+    sc = SynthCurator.from_config(cfg)
+    assert sc.model is None
+
+
+def test_from_config_shipped_weights_full_path(tmp_path):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+shipped_weights: nonexistent_preset_for_this_test
+""")
+    with pytest.raises(SynthCuratorError, match="not found"):
+        SynthCurator.from_config(cfg)
+
+
+def test_shipped_weights_isic2018_swin_b_loads_for_real(tmp_path):
+    """Constructs (not a full run(), too heavy for a unit test) against the real shipped bundle -
+    a regression test that the actual packaged asset stays loadable and internally consistent."""
+    isic_target = {"AKIEC": 3.27, "BCC": 5.13, "BKL": 10.97, "DF": 1.15, "MEL": 11.11, "NV": 66.95, "VASC": 1.42}
+    real_dir, synthetic_dir = tmp_path / "real", tmp_path / "synthetic"
+    for i, cls in enumerate(isic_target):
+        make_image(real_dir / cls / f"r_{cls}.png", i)
+        make_image(synthetic_dir / cls / f"s_{cls}.png", i + 100)
+    sc = SynthCurator(tmp_path / "run", isic_target, shipped_weights="isic2018_swin_b",
+                      synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32,
+                      dist_group_by=["grp"], num_images=15, safety_max_similarity_threshold=None)
+    assert sc.model is None
+    assert sc.classes == sorted(isic_target)
+    assert set(sc.metrics) == {
+        "clip_log_odds_score", "fscs_score", "clip_similarity_cancer", "clip_similarity_artifact",
+        "lpips_score", "fsim_score", "brisqe_score", "psnr_score", "ssim_score",
+        "diversity_score", "realism_score", "is_contribution_score",
+        "fid_inception", "kid_dino", "swd_dino"}

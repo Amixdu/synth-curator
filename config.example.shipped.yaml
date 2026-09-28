@@ -1,0 +1,64 @@
+# synth-curator: precomputed-weights config (weights_path / shipped_weights).
+# For the normal, tournament-driven path, see config.example.yaml instead - this file is for
+# when you already know good per-class metric weights (yours, or one shipped with the library)
+# and want to skip the tournament (steps 4-6) entirely.
+#
+# Because there's no tournament here, several of config.example.yaml's sections don't apply and
+# must be left out entirely - synth-curator errors if it finds them:
+#   - model: is OPTIONAL here, and if given, only trainer/params (no gpu_ids/production_gpu_id -
+#     there's nothing to run in parallel). The only thing it's for is train_production().
+#   - tournament: not allowed - there's no tournament to configure.
+#   - weights: not allowed - weights aren't derived here, they're supplied directly.
+#   - metrics.instance / metrics.distributional: not allowed - the metric portfolio comes from
+#     the weights bundle itself. metrics.dist_min_samples is still fine (curation still uses it).
+
+workdir: runs/isic_run1
+seed: 0
+
+# Exactly one of these two. Both point at a directory containing weights.json + meta.json - see
+# weights_bundle.py for the format, or an existing shipped bundle's meta.json for an example.
+
+# Your own, from a previous run:
+# weights_path: /path/to/my_weights_bundle
+
+# One shipped with the library, by name (synth_curator.weights_bundle.list_shipped_weights()):
+shipped_weights: isic2018_swin_b
+
+# Optional: only for train_production() - the CLI's --train-production needs this, since it has
+# no Python model object to pass in. No gpu_ids here; this is always one plain instance.
+# model:
+#   trainer: my_project.training:MyModel
+#   params: {}
+
+inputs:
+  synthetic_dir: /path/to/synthetic_pool
+  real_dir: /path/to/real_train
+  resolution: 512
+  # metadata_csv: /path/to/metadata.csv
+  # pool_workdir: /path/to/shared_pool
+
+# Must match the weights bundle's own classes exactly (see its meta.json) - synth-curator checks
+# this and errors otherwise. Values below are the shipped isic2018_swin_b preset's own classes.
+target_distribution:
+  AKIEC: 3.27
+  BCC: 5.13
+  BKL: 10.97
+  DF: 1.15
+  MEL: 11.11
+  NV: 66.95
+  VASC: 1.42
+
+# Only dist_min_samples is meaningful here; instance/distributional portfolio lists are forbidden
+# (see above).
+metrics:
+  dist_min_samples: {fid: 2048, kid: 256, swd: 64}
+
+curation:
+  num_images: 8012
+  temperature: 0.05
+  # Must satisfy whatever distributional metrics the bundle's weights actually cover (see its
+  # meta.json's "metrics") - >=2 real generation groups, same as the normal path.
+  dist_group_by: [source_checkpoint_kimg, cfg_scale]
+  block_search: false
+  num_blocks: 1
+  safety_max_similarity_threshold: 0.97

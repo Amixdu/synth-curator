@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "name": "isic2018_resnet50",
+
+  "classes": ["AKIEC", "BCC", "BKL", "DF", "MEL", "NV", "VASC"],
+  "metrics": [
+    "clip_log_odds_score", "fscs_score", "clip_similarity_cancer", "clip_similarity_artifact",
+    "lpips_score", "fsim_score", "brisqe_score", "psnr_score", "ssim_score",
+    "diversity_score", "realism_score", "is_contribution_score",
+    "fid_inception", "kid_dino", "swd_dino"
+  ],
+
+  "description": "7-class dermoscopy skin lesion classification (ISIC-2018), ResNet-50 tournament.",
+
+  "weights_derivation": {
+    "utility_formula": "worst_anchored",
+    "dist_utility_formula": "random_anchored",
+    "metric_beta": 2.0,
+    "scoring": null
+  },
+  "tournament": {
+    "random_seeds_per_metric_set": 30
+  },
+  "curation": {
+    "target_distribution": {"AKIEC": 3.27, "BCC": 5.13, "BKL": 10.97, "DF": 1.15, "MEL": 11.11, "NV": 66.95, "VASC": 1.42},
+    "dist_group_by": ["source_checkpoint_kimg", "cfg_scale"]
+  },
+  "model": {
+    "name": "ResNet-50",
+    "framework": "torchvision.models.resnet50, IMAGENET1K_V1 pretrained weights",
+    "notes": "Backbone frozen; only the classification head was fine-tuned.",
+    "hyperparameters": {
+      "num_classes": 7,
+      "epochs": 50,
+      "batch_size": 32,
+      "eval_batch_size": 64,
+      "optimizer": "AdamW",
+      "learning_rate": 0.001,
+      "early_stopping_patience": 10,
+      "resolution": 224,
+      "train_augmentation": "RandomResizedCrop(224), RandomHorizontalFlip, ImageNet normalization",
+      "eval_transform": "Resize(256) + CenterCrop(224), ImageNet normalization",
+      "loss": "CrossEntropyLoss",
+      "seed": 42
+    }
+  },
+
+  "provenance": {
+    "synth_curator_version": "0.0.1.dev0",
+    "computed_on": "2026-09-13"
+  }
+}

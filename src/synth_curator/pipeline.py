@@ -1,15 +1,14 @@
 """SynthCurator: the whole pipeline as one object, one model per instance.
 
-This is the full path only, no shortcuts: raw images + a model in, curated set out. `run()` is
-the orchestrator, and it is now a fully linear thread - each step's output is passed explicitly
-into the next, with no step reaching upward to pull its own input:
+Raw images + a model in, curated set out - or raw images + already-known weights
+(`weights_path=`/`shipped_weights=`) in, skipping the tournament (steps 4-6) entirely; see
+weights_bundle.py. `run()` is the orchestrator, and it is a fully linear thread either way - each
+step's output is passed explicitly into the next, with no step reaching upward to pull its own input:
 
     std_dir = standardize()
     features_dir = extract_features(std_dir)
     metadata_csv = compute_metrics(std_dir, features_dir)
-    metric_sets = curate_metric_sets(metadata_csv, features_dir)
-    predictions = run_tournament(metric_sets)
-    weights = derive_weights(predictions)
+    weights = resolve_weights(metadata_csv, features_dir)   # steps 4-6, or precomputed weights
     curate(metadata_csv, features_dir, weights, ...)
 
 Every step still checks its own workdir output first and returns immediately if it already
@@ -39,6 +38,7 @@ from .exceptions import SynthCuratorError
 from .model_interface import Model, ModelFactory, import_dotted, load_model, load_model_factory
 from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
 from .steps.weights import ScoringFn
+from .weights_bundle import load_shipped_weights, load_weights_path
 
 log = logging.getLogger(__name__)
 
@@ -74,11 +74,37 @@ class SynthCurator:
         scoring: ScoringFn | None = None,             # override: (true, pred, classes) -> {class: score};
                                                        # replaces F-beta entirely, and metric_beta is then unused
         force_retrain: bool = False,                  # ignore the tournament's prediction cache, e.g. after changing the model
+        weights_path: str | Path | None = None,       # bring your own precomputed weights - a directory with weights.json + meta.json; skips the tournament (steps 4-6) entirely
+        shipped_weights: str | None = None,           # same, but a bundle shipped with the library by name - see weights_bundle.list_shipped_weights()
     ):
-        if model is None and model_factory is None:
+        if weights_path is not None and shipped_weights is not None:
+            raise SynthCuratorError("weights_path and shipped_weights can't both be set - pick one")
+        precomputed = weights_path is not None or shipped_weights is not None
+        if model is None and model_factory is None and not precomputed:
             raise SynthCuratorError("a model is required: pass model=... (one instance, trained "
-                                    "sequentially), or model_factory=...+gpu_ids=... (a fresh model "
-                                    "per GPU worker, trained in parallel)")
+                                    "sequentially), model_factory=...+gpu_ids=... (a fresh model per "
+                                    "GPU worker, trained in parallel), or weights_path=.../"
+                                    "shipped_weights=... to skip the tournament entirely")
+        if precomputed:
+            if model_factory is not None or gpu_ids:
+                raise SynthCuratorError(
+                    "model_factory/gpu_ids don't apply with weights_path/shipped_weights set - "
+                    "there's no tournament to run in parallel. A plain model=... is still fine, "
+                    "for train_production()")
+            if random_seeds_per_metric_set != 1 or force_retrain:
+                raise SynthCuratorError(
+                    "random_seeds_per_metric_set/force_retrain don't apply with weights_path/"
+                    "shipped_weights set - there's no tournament to repeat seeds on or a "
+                    "prediction cache to bypass")
+            if (utility_formula != "worst_anchored" or dist_utility_formula != "random_anchored"
+                    or metric_beta != 2.0 or scoring is not None):
+                raise SynthCuratorError(
+                    "utility_formula/dist_utility_formula/metric_beta/scoring don't apply with "
+                    "weights_path/shipped_weights set - weights are supplied directly, not derived")
+            if list(metrics) != list(DEFAULT_METRICS):
+                raise SynthCuratorError(
+                    "metrics doesn't apply with weights_path/shipped_weights set - the metric "
+                    "portfolio comes from the weights bundle itself")
         if model_factory is not None and not gpu_ids:
             raise SynthCuratorError("model_factory needs gpu_ids too - which GPU each worker "
                                     "should use, e.g. gpu_ids=[0, 1, 2, 3]")
@@ -93,8 +119,6 @@ class SynthCurator:
             raise SynthCuratorError(f"metric_beta must be positive, got {metric_beta}")
         if scoring is not None and not callable(scoring):
             raise SynthCuratorError("scoring must be callable: (true_labels, pred_labels, classes) -> {class: score}")
-        for metric in metrics:
-            props(metric)
         self.workdir = Path(workdir)
         self.pool_workdir = Path(pool_workdir) if pool_workdir is not None else self.workdir
         self.target_distribution = target_distribution
@@ -106,7 +130,23 @@ class SynthCurator:
         self.real_dir = Path(real_dir)
         self.resolution = resolution
         self.features_dir = self.pool_workdir / "features"
-        self.metrics = list(metrics)
+        self.precomputed_weights, self.precomputed_weights_meta = None, None
+        if precomputed:
+            source = f"weights_path={weights_path}" if weights_path is not None else f"shipped_weights={shipped_weights!r}"
+            w, m = (load_weights_path(weights_path) if weights_path is not None
+                   else load_shipped_weights(shipped_weights))
+            if set(self.classes) != set(m["classes"]):
+                raise SynthCuratorError(
+                    f"{source}: classes {sorted(m['classes'])} don't match target_distribution's "
+                    f"classes {self.classes}")
+            for metric in m["metrics"]:
+                props(metric)   # catch an unknown/renamed metric from an old or malformed bundle
+            self.precomputed_weights, self.precomputed_weights_meta = w, m
+            self.metrics = list(m["metrics"])
+        else:
+            for metric in metrics:
+                props(metric)
+            self.metrics = list(metrics)
         self.num_images = num_images
         self.temperature = temperature
         self.dist_group_by = list(dist_group_by)
@@ -132,8 +172,17 @@ class SynthCurator:
         after standardizing/embedding/scoring the whole pool."""
         # model_factory's models aren't built until a GPU worker starts, so this can only check
         # the plain model= route upfront - a bad model_factory surfaces at the first training job instead.
-        if self.model is not None and not callable(getattr(self.model, "train_and_evaluate", None)):
-            raise SynthCuratorError("model must implement train_and_evaluate(train_manifest, seed) -> DataFrame")
+        if self.model is not None:
+            if self.precomputed_weights is not None:
+                # train_and_evaluate is never called with precomputed weights - the only thing
+                # model=... can be for here is train_production()
+                if not callable(getattr(self.model, "train_production", None)):
+                    raise SynthCuratorError(
+                        "model must implement train_production(train_manifest) -> Any with "
+                        "weights_path/shipped_weights set, since train_and_evaluate is never "
+                        "called in this mode")
+            elif not callable(getattr(self.model, "train_and_evaluate", None)):
+                raise SynthCuratorError("model must implement train_and_evaluate(train_manifest, seed) -> DataFrame")
         synthetic_images = None
         for name, path in (("synthetic_dir", self.synthetic_dir), ("real_dir", self.real_dir)):
             if not path.is_dir():
@@ -201,51 +250,81 @@ class SynthCurator:
 
     @classmethod
     def from_config(cls, path: str | Path, model: Model | None = None) -> SynthCurator:
-        """Build from config.example.yaml-style YAML. `model` (a Python object) is used if the
-        config's `model:` block is absent; if both are given, the config's `model:` wins. If the
-        config's `model.gpu_ids` is set, `trainer` becomes a GPU-worker factory instead, and a
-        plain instance (for train_production()) is also built the same way, bound to
+        """Build from config.example.yaml-style YAML (or config.example.shipped.yaml, for
+        weights_path/shipped_weights). `model` (a Python object) is used if the config's `model:`
+        block is absent; if both are given, the config's `model:` wins. If the config's
+        `model.gpu_ids` is set, `trainer` becomes a GPU-worker factory instead, and a plain
+        instance (for train_production()) is also built the same way, bound to
         `model.production_gpu_id` (or gpu_ids[0] if that's not set) - unless `model` was already
-        given here, which is kept as-is."""
+        given here, which is kept as-is.
+
+        If the config sets `weights_path`/`shipped_weights`, there's no tournament to run at all:
+        `tournament:`, `weights:` and `metrics.instance`/`metrics.distributional` must all be
+        absent (they'd do nothing), and `model:` is optional and, if given, only needs
+        `trainer`/`params` (no gpu_ids/production_gpu_id) - purely for train_production()."""
         import yaml
         config = yaml.safe_load(Path(path).read_text())
         inputs_cfg = config.get("inputs", {})
         metrics_cfg = config.get("metrics", {})
-        weights_cfg = config.get("weights", {})
         curation_cfg = config.get("curation", {})
         model_cfg = config.get("model")
+        weights_path, shipped_weights = config.get("weights_path"), config.get("shipped_weights")
+        precomputed = weights_path is not None or shipped_weights is not None
         model_factory, gpu_ids = None, None
-        if model_cfg is not None:
-            if "trainer" not in model_cfg:
-                raise SynthCuratorError("config's model: block needs a 'trainer' key "
-                                        "(a dotted 'package.module:ClassOrFactory' path)")
-            gpu_ids = model_cfg.get("gpu_ids")
-            production_gpu_id = model_cfg.get("production_gpu_id")
-            if production_gpu_id is not None and not gpu_ids:
+
+        if precomputed:
+            forbidden = [k for k in ("tournament", "weights") if k in config]
+            if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
+                forbidden.append("metrics.instance/metrics.distributional")
+            if forbidden:
                 raise SynthCuratorError(
-                    "model.production_gpu_id needs model.gpu_ids too - there's no parallel "
-                    "tournament here for it to pick a GPU apart from")
-            if gpu_ids:
-                # trainer(**params, gpu_id=...) is called once per tournament worker, not once here
-                # - your trainer needs to accept that gpu_id keyword.
-                model_factory = load_model_factory(model_cfg["trainer"], model_cfg.get("params"))
+                    f"config key(s) {forbidden} don't apply with weights_path/shipped_weights set "
+                    "- there's no tournament to run or derive weights from")
+            if model_cfg is not None:
+                if "trainer" not in model_cfg:
+                    raise SynthCuratorError("config's model: block needs a 'trainer' key "
+                                            "(a dotted 'package.module:ClassOrFactory' path)")
+                if model_cfg.get("gpu_ids") or model_cfg.get("production_gpu_id") is not None:
+                    raise SynthCuratorError(
+                        "config's model.gpu_ids/production_gpu_id don't apply with weights_path/"
+                        "shipped_weights set - there's no tournament to run in parallel. Keep "
+                        "just trainer/params, for train_production()")
                 if model is None:
-                    # train_production() needs a plain instance too, and the CLI never passes one
-                    # (there's no Python object to pass) - build one the same way a worker would,
-                    # on production_gpu_id if you set it (e.g. a bigger GPU, for the one training
-                    # run that's worth being expensive), else just the first tournament GPU. An
-                    # explicitly-passed model=... here is left alone either way.
-                    model = model_factory(production_gpu_id if production_gpu_id is not None else gpu_ids[0])
-            else:
-                model = load_model(model_cfg["trainer"], model_cfg.get("params"))
-        if model is None and model_factory is None:
-            raise SynthCuratorError("a model is required: add a config 'model:' block, or pass model=... here")
+                    model = load_model(model_cfg["trainer"], model_cfg.get("params"))
+        else:
+            if model_cfg is not None:
+                if "trainer" not in model_cfg:
+                    raise SynthCuratorError("config's model: block needs a 'trainer' key "
+                                            "(a dotted 'package.module:ClassOrFactory' path)")
+                gpu_ids = model_cfg.get("gpu_ids")
+                production_gpu_id = model_cfg.get("production_gpu_id")
+                if production_gpu_id is not None and not gpu_ids:
+                    raise SynthCuratorError(
+                        "model.production_gpu_id needs model.gpu_ids too - there's no parallel "
+                        "tournament here for it to pick a GPU apart from")
+                if gpu_ids:
+                    # trainer(**params, gpu_id=...) is called once per tournament worker, not once
+                    # here - your trainer needs to accept that gpu_id keyword.
+                    model_factory = load_model_factory(model_cfg["trainer"], model_cfg.get("params"))
+                    if model is None:
+                        # train_production() needs a plain instance too, and the CLI never passes
+                        # one (there's no Python object to pass) - build one the same way a worker
+                        # would, on production_gpu_id if you set it (e.g. a bigger GPU, for the one
+                        # training run that's worth being expensive), else just the first
+                        # tournament GPU. An explicitly-passed model=... here is left alone either way.
+                        model = model_factory(production_gpu_id if production_gpu_id is not None else gpu_ids[0])
+                else:
+                    model = load_model(model_cfg["trainer"], model_cfg.get("params"))
+            if model is None and model_factory is None:
+                raise SynthCuratorError("a model is required: add a config 'model:' block, or pass model=... here")
+
         synthetic_dir, real_dir, resolution = (
             inputs_cfg.get("synthetic_dir"), inputs_cfg.get("real_dir"), inputs_cfg.get("resolution"))
         if not (synthetic_dir and real_dir and resolution):
             raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
         kw = dict(
             model=model, model_factory=model_factory, gpu_ids=gpu_ids,
+            weights_path=weights_path, shipped_weights=shipped_weights,
             synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
             pool_workdir=inputs_cfg.get("pool_workdir"),
             num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
@@ -253,17 +332,21 @@ class SynthCurator:
             metadata_csv=inputs_cfg.get("metadata_csv"),
             block_search=curation_cfg.get("block_search", False), num_blocks=curation_cfg.get("num_blocks", 1),
             safety_max_similarity_threshold=curation_cfg.get("safety_max_similarity_threshold", 0.97),
-            utility_formula=weights_cfg.get("utility_formula", "worst_anchored"),
-            dist_utility_formula=weights_cfg.get("dist_utility_formula", "random_anchored"),
             dist_min_samples=metrics_cfg.get("dist_min_samples"),
             seed=config.get("seed", 0),
-            random_seeds_per_metric_set=config.get("tournament", {}).get("random_seeds_per_metric_set", 1),
-            metric_beta=weights_cfg.get("beta", 2.0),
-            scoring=import_dotted(weights_cfg["scoring"]) if weights_cfg.get("scoring") else None,
-            force_retrain=config.get("tournament", {}).get("force_retrain", False),
         )
-        if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
-            kw["metrics"] = [*metrics_cfg.get("instance", []), *metrics_cfg.get("distributional", [])]
+        if not precomputed:
+            weights_cfg = config.get("weights", {})
+            kw.update(
+                utility_formula=weights_cfg.get("utility_formula", "worst_anchored"),
+                dist_utility_formula=weights_cfg.get("dist_utility_formula", "random_anchored"),
+                random_seeds_per_metric_set=config.get("tournament", {}).get("random_seeds_per_metric_set", 1),
+                metric_beta=weights_cfg.get("beta", 2.0),
+                scoring=import_dotted(weights_cfg["scoring"]) if weights_cfg.get("scoring") else None,
+                force_retrain=config.get("tournament", {}).get("force_retrain", False),
+            )
+            if metrics_cfg.get("instance") or metrics_cfg.get("distributional"):
+                kw["metrics"] = [*metrics_cfg.get("instance", []), *metrics_cfg.get("distributional", [])]
         for key in ("workdir", "target_distribution"):
             if key not in config:
                 raise SynthCuratorError(f"config is missing the required {key!r} key")
@@ -369,14 +452,23 @@ class SynthCurator:
         fingerprint.write(result, current)
         return result
 
+    def resolve_weights(self, metadata_csv: Path, features_dir: Path) -> dict[str, dict]:
+        """4-6: curate metric sets, run the tournament, derive weights - or, with
+        weights_path/shipped_weights set, skip straight to those precomputed weights instead."""
+        if self.precomputed_weights is not None:
+            (self.workdir / "weights.json").write_text(json.dumps(self.precomputed_weights, indent=2))
+            (self.workdir / "weights_source.json").write_text(json.dumps(self.precomputed_weights_meta, indent=2))
+            return self.precomputed_weights
+        metric_sets = self.curate_metric_sets(metadata_csv, features_dir)
+        predictions = self.run_tournament(metric_sets)
+        return self.derive_weights(predictions)
+
     def run(self) -> Path:
         """The whole pipeline -> curated manifest CSV path."""
         std_dir = self.standardize()                              # 1
         features_dir = self.extract_features(std_dir)             # 2
         metadata_csv = self.compute_metrics(std_dir, features_dir)  # 3
-        metric_sets = self.curate_metric_sets(metadata_csv, features_dir)  # 4
-        predictions = self.run_tournament(metric_sets)             # 5
-        resolved_weights = self.derive_weights(predictions)        # 6
+        resolved_weights = self.resolve_weights(metadata_csv, features_dir)  # 4-6, or precomputed
         return self.curate(metadata_csv, features_dir, resolved_weights)  # 7
 
     def train_production(self):

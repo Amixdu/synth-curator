@@ -1,4 +1,7 @@
 """Shared fixtures/helpers. Tiny CPU-only images and features. No network, no GPU, no heavy deps."""
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,6 +12,20 @@ from synth_curator.steps import features, standardize
 
 CLASSES = ["A", "B", "C"]
 TARGET = {"A": 50.0, "B": 30.0, "C": 20.0}
+
+
+def build_weights_bundle(root, classes, metric_names, weights=None, schema_version=1, extra_meta=None):
+    """A weights.json + meta.json bundle at `root`, for weights_path=/shipped_weights= tests."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    if weights is None:
+        weights = {c: {m: 1.0 for m in metric_names} for c in classes}
+    (root / "weights.json").write_text(json.dumps(weights))
+    meta = {"schema_version": schema_version, "classes": list(classes), "metrics": list(metric_names)}
+    if extra_meta:
+        meta.update(extra_meta)
+    (root / "meta.json").write_text(json.dumps(meta))
+    return root
 
 
 def make_image(path, seed, size=(32, 32)):
