@@ -62,3 +62,9 @@ curation:
   block_search: false
   num_blocks: 1
   safety_max_similarity_threshold: 0.97
+
+# Optional: model variance locked, data variance swept - `synth-curator config.yaml
+# --train-production` trains one production model per seed instead of one overall, reusing these
+# same weights for every seed. See config.example.yaml.
+# resample:
+#   seeds: 30

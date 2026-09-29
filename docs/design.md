@@ -79,7 +79,7 @@ sequenceDiagram
     else weights_path / shipped_weights set
         Note right of SC: loaded once at construction (weights_bundle.py) and validated<br/>against classes/metrics - no tournament, no model needed unless<br/>train_production() is also wanted
     end
-    SC->>SC: write workdir/weights.json (+ weights_source.json if precomputed)
+    SC->>SC: write workdir/weights.json + meta.json - makes this workdir itself a valid<br/>weights_path= source afterward (own derivation settings, or the original<br/>bundle's meta if precomputed)
 
     SC->>CUR: curate(metadata_csv, features_dir, weights, out_dir, curation params) [step 7]
     Note right of CUR: skip if seed_{seed}.csv exists and its fingerprint (weights +<br/>curation params) matches, else recompute

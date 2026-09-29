@@ -360,6 +360,51 @@ set. See `config.example.shipped.yaml` for the config/CLI shape, `weights_bundle
 `weights.json`+`meta.json` bundle format (to bring your own), and
 `weights_bundle.list_shipped_weights()` for what's shipped.
 
+`resolve_weights()` (called by `run()`) always writes both files to `workdir`, however the weights
+got there — so any workdir from a previous run is itself a valid `weights_path=` for a later one.
+
+### Resampling: model locked, data variance swept
+
+Checking whether curation actually helps — not just one lucky draw — means training on many
+different curated draws of the *same* weights, holding the model fixed:
+
+```python
+for seed, resampled in sc.resample(range(30)).items():
+    checkpoint = resampled.train_production()
+```
+
+`resample()` derives (or reuses) `sc`'s weights once, then hands back one `SynthCurator` per seed —
+same model, weights, and settings, only `seed` and `workdir` differ (`sc.workdir/resample/seed_<n>`
+by default) — sharing `pool_workdir` too, so steps 1-3 aren't repeated per seed. It returns
+instances, not results, so it's your call whether to run `.run()` or `.train_production()` (or
+both) on each.
+
+The config/CLI route has this too — add a `resample:` section and the CLI does the same sweep,
+printing one line per seed:
+
+```yaml
+resample:
+  seeds: 30   # an int (0..29), or an explicit list like [3, 7, 19]. Omit this section for a single run.
+```
+
+```bash
+synth-curator config.yaml --train-production
+# seed=0: checkpoints/seed_0/resnet18_final.pt
+# seed=1: checkpoints/seed_1/resnet18_final.pt
+# ...
+```
+
+`from_config()` itself doesn't read `resample:` (it builds one `SynthCurator`; resampling is what
+you do with it afterward). If you're driving the same config from your own script instead of the
+CLI, `SynthCurator.resample_seeds_from_config(path)` reads that section the same way the CLI does:
+
+```python
+sc = SynthCurator.from_config("config.yaml")
+seeds = SynthCurator.resample_seeds_from_config("config.yaml")   # None if resample: is absent
+if seeds:
+    checkpoints = {seed: resampled.train_production() for seed, resampled in sc.resample(seeds).items()}
+```
+
 ## Metrics
 
 The default portfolio (override with `metrics=[...]`, a flat list of names — the YAML config's

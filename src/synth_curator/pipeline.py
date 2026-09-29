@@ -28,17 +28,19 @@ import json
 import logging
 import shutil
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
+from . import __version__   # set at the top of __init__.py, before this module is imported
 from .core import fingerprint
 from .core.registry import DEFAULT_METRICS, is_distributional, is_instance, props
 from .exceptions import SynthCuratorError
 from .model_interface import Model, ModelFactory, import_dotted, load_model, load_model_factory
 from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
 from .steps.weights import ScoringFn
-from .weights_bundle import load_shipped_weights, load_weights_path
+from .weights_bundle import SCHEMA_VERSION, load_shipped_weights, load_weights_path
 
 log = logging.getLogger(__name__)
 
@@ -352,6 +354,20 @@ class SynthCurator:
                 raise SynthCuratorError(f"config is missing the required {key!r} key")
         return cls(config["workdir"], config["target_distribution"], **kw)
 
+    @staticmethod
+    def resample_seeds_from_config(path: str | Path) -> list[int] | None:
+        """The config's `resample:` section, as a seed list for resample() - None if the section
+        is absent (no sweep). `from_config()` itself doesn't read this key (it builds one
+        SynthCurator; resampling is what you do with it afterward, not part of building it) - this
+        is what the CLI calls, and what you'd call too if you're driving the same config from your
+        own script instead of `synth-curator config.yaml`."""
+        import yaml
+        resample_cfg = yaml.safe_load(Path(path).read_text()).get("resample")
+        if resample_cfg is None:
+            return None
+        seeds = resample_cfg.get("seeds", 1)
+        return list(range(seeds)) if isinstance(seeds, int) else list(seeds)
+
     # ---- steps ------------------------------------------------------------------------------
 
     def standardize(self) -> Path:
@@ -452,16 +468,40 @@ class SynthCurator:
         fingerprint.write(result, current)
         return result
 
+    def _own_weights_meta(self) -> dict:
+        """meta.json for weights this instance just derived itself, so this workdir - not just a
+        shipped/bring-your-own bundle - is itself a valid weights_path= source afterward. See
+        weights_bundle.py for the format; everything past classes/metrics here is informational."""
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "classes": self.classes,
+            "metrics": self.metrics,
+            "weights_derivation": {
+                "utility_formula": self.utility_formula,
+                "dist_utility_formula": self.dist_utility_formula,
+                "metric_beta": self.metric_beta,
+                "scoring": f"{self.scoring.__module__}:{self.scoring.__qualname__}" if self.scoring else None,
+            },
+            "tournament": {"random_seeds_per_metric_set": len(self.seeds)},
+            "curation": {"target_distribution": self.target_distribution, "dist_group_by": self.dist_group_by},
+            "provenance": {"synth_curator_version": __version__, "computed_on": date.today().isoformat()},
+        }
+
     def resolve_weights(self, metadata_csv: Path, features_dir: Path) -> dict[str, dict]:
         """4-6: curate metric sets, run the tournament, derive weights - or, with
-        weights_path/shipped_weights set, skip straight to those precomputed weights instead."""
+        weights_path/shipped_weights set, skip straight to those precomputed weights instead.
+        Either way, writes workdir/weights.json + meta.json, so this workdir is itself a valid
+        weights_path= source afterward (see resample())."""
         if self.precomputed_weights is not None:
-            (self.workdir / "weights.json").write_text(json.dumps(self.precomputed_weights, indent=2))
-            (self.workdir / "weights_source.json").write_text(json.dumps(self.precomputed_weights_meta, indent=2))
-            return self.precomputed_weights
-        metric_sets = self.curate_metric_sets(metadata_csv, features_dir)
-        predictions = self.run_tournament(metric_sets)
-        return self.derive_weights(predictions)
+            resolved, meta = self.precomputed_weights, self.precomputed_weights_meta
+        else:
+            metric_sets = self.curate_metric_sets(metadata_csv, features_dir)
+            predictions = self.run_tournament(metric_sets)
+            resolved = self.derive_weights(predictions)
+            meta = self._own_weights_meta()
+        (self.workdir / "weights.json").write_text(json.dumps(resolved, indent=2))
+        (self.workdir / "meta.json").write_text(json.dumps(meta, indent=2))
+        return resolved
 
     def run(self) -> Path:
         """The whole pipeline -> curated manifest CSV path."""
@@ -492,3 +532,41 @@ class SynthCurator:
                 "in addition to train_and_evaluate() - see synth_curator.model_interface.ProductionModel")
         manifest = self.run()
         return self.model.train_production(manifest)
+
+    def resample(self, seeds: Sequence[int], subdir: str = "resample") -> dict[int, SynthCurator]:
+        """Model variance locked, data variance swept: one SynthCurator per seed, sharing this
+        instance's model/weights/target_distribution/curation settings - only `seed` (and
+        `workdir`, so they don't collide) differs. This is the standard way to check a curation
+        framework's actual effect (averaged over many draws), not one draw's luck.
+
+        Weights are resolved once, here, on `self` - not re-derived per seed - then reused by every
+        seed via weights_path=self.workdir (any workdir is a valid weights_path= source after its
+        weights are resolved; see resolve_weights()). pool_workdir is shared too, so steps 1-3
+        aren't repeated per seed either. Returns instances, not results - call .run() or
+        .train_production() on each yourself, e.g.:
+
+            checkpoints = {seed: sc.train_production() for seed, sc in curator.resample(range(30)).items()}
+        """
+        std_dir = self.standardize()
+        features_dir = self.extract_features(std_dir)
+        metadata_csv = self.compute_metrics(std_dir, features_dir)
+        self.resolve_weights(metadata_csv, features_dir)
+        # precomputed-weights mode (which every seed here uses) only ever calls train_production,
+        # never train_and_evaluate - so a model that implements only the latter (fine for the
+        # tournament self.model may have just run) isn't usable here; drop it to None instead of
+        # forwarding something that would fail _validate(). .run() still works either way -
+        # .train_production() will raise its own clear error if you then call it without one.
+        model = self.model if callable(getattr(self.model, "train_production", None)) else None
+        return {
+            seed: SynthCurator(
+                workdir=self.workdir / subdir / f"seed_{seed}",
+                target_distribution=self.target_distribution, model=model,
+                synthetic_dir=self.synthetic_dir, real_dir=self.real_dir, resolution=self.resolution,
+                pool_workdir=self.pool_workdir, weights_path=self.workdir,
+                metadata_csv=self.metadata_csv, num_images=self.num_images, temperature=self.temperature,
+                dist_group_by=self.dist_group_by, block_search=self.block_search, num_blocks=self.num_blocks,
+                safety_max_similarity_threshold=self.safety_max_similarity_threshold,
+                dist_min_samples=self.dist_min_samples, seed=seed,
+            )
+            for seed in seeds
+        }

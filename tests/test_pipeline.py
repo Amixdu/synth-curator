@@ -1198,7 +1198,7 @@ def test_resolve_weights_uses_the_bundle_and_skips_the_tournament(tmp_path, monk
     resolved = sc.resolve_weights(metadata_csv, sc.features_dir)
     assert resolved == weights
     assert json.loads((sc.workdir / "weights.json").read_text()) == weights
-    assert (sc.workdir / "weights_source.json").is_file()
+    assert (sc.workdir / "meta.json").is_file()
 
 
 def test_run_end_to_end_with_weights_path(tmp_path):
@@ -1320,3 +1320,134 @@ def test_shipped_weights_isic2018_swin_b_loads_for_real(tmp_path):
         "lpips_score", "fsim_score", "brisqe_score", "psnr_score", "ssim_score",
         "diversity_score", "realism_score", "is_contribution_score",
         "fid_inception", "kid_dino", "swd_dino"}
+
+
+# ---- resolve_weights() writes a self-contained meta.json too ------------------------------
+
+def test_resolve_weights_writes_a_meta_json_making_the_workdir_reusable(tmp_path):
+    """The whole point: workdir/weights.json + meta.json together mean this workdir is itself a
+    valid weights_path= source afterward - no separate export step."""
+    from synth_curator import weights_bundle as wb
+    sc = _make(tmp_path)
+    sc.run()
+
+    weights, meta = wb.load_weights_path(sc.workdir)   # doesn't raise: internally consistent
+    assert set(weights) == set(meta["classes"]) == set(TARGET)
+    assert set(meta["metrics"]) == set(sc.metrics)
+    assert meta["weights_derivation"]["utility_formula"] == sc.utility_formula
+    assert meta["tournament"]["random_seeds_per_metric_set"] == 1
+    assert meta["curation"]["target_distribution"] == TARGET
+    assert meta["provenance"]["synth_curator_version"]
+
+
+def test_a_just_derived_workdir_is_reusable_as_weights_path_for_a_fresh_instance(tmp_path):
+    sc = _make(tmp_path)
+    sc.run()
+    # a separate SynthCurator instance, pointed at the same pool, reusing sc's already-derived
+    # weights instead of running its own tournament
+    sc2 = SynthCurator(tmp_path / "run2", TARGET, weights_path=sc.workdir,
+                       synthetic_dir=sc.synthetic_dir, real_dir=sc.real_dir, resolution=32,
+                       dist_group_by=[], num_images=15, safety_max_similarity_threshold=None)
+    assert sc2.precomputed_weights == json.loads((sc.workdir / "weights.json").read_text())
+    assert sc2.metrics == sc.metrics
+
+
+# ---- resample(): model locked, data variance swept -----------------------------------------
+
+def test_resample_returns_one_synth_curator_per_seed(tmp_path):
+    from tests.conftest import _WithProduction
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    sc = SynthCurator(tmp_path / "run", TARGET, model=_WithProduction(fake_model()),
+                      synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32, **KW)
+    std_dir = sc.standardize()
+    fake_extract_features(std_dir, synthetic_dir, sc.features_dir, real_dir)
+    curators = sc.resample([0, 1, 2])
+    assert set(curators) == {0, 1, 2}
+    for seed, sub in curators.items():
+        assert sub.seed == seed
+        assert sub.workdir == sc.workdir / "resample" / f"seed_{seed}"
+        assert sub.model is sc.model                       # model variance locked
+        assert sub.precomputed_weights is not None          # weights reused, not re-derived
+
+
+def test_resample_drops_a_model_without_train_production_to_none(tmp_path):
+    """self.model only needs train_and_evaluate (checked when self was built normally) - but every
+    resampled seed is precomputed-weights mode, which only ever calls train_production. A model
+    lacking it can't be forwarded as-is (it would fail the sub-instance's own validation), but
+    .run() still has to work on each seed regardless - so it's dropped to None, not an error."""
+    sc = _make(tmp_path)   # fake_model(): train_and_evaluate only, no train_production
+    curators = sc.resample([0])
+    assert curators[0].model is None
+    assert len(pd.read_csv(curators[0].run())) == 15   # still works without a model
+
+
+def test_resample_reuses_weights_without_rerunning_the_tournament(tmp_path, monkeypatch):
+    sc = _make(tmp_path)
+    curators = sc.resample([0, 1])
+
+    def boom(*a, **kw):
+        raise AssertionError("no tournament should run for a resampled seed")
+    for sub in curators.values():
+        monkeypatch.setattr(sub, "curate_metric_sets", boom)
+        monkeypatch.setattr(sub, "run_tournament", boom)
+        monkeypatch.setattr(sub, "derive_weights", boom)
+
+    manifests = {seed: sub.run() for seed, sub in curators.items()}
+    assert manifests[0] != manifests[1]   # distinct seeds -> distinct curated manifests
+    for manifest in manifests.values():
+        assert len(pd.read_csv(manifest)) == 15
+
+
+def test_resample_shares_pool_workdir_so_steps_1_to_3_are_not_repeated(tmp_path):
+    sc = _make(tmp_path)
+    curators = sc.resample([0, 1])
+    for sub in curators.values():
+        assert sub.pool_workdir == sc.pool_workdir
+        assert sub.features_dir == sc.features_dir
+
+
+def test_resample_works_when_self_already_uses_precomputed_weights(tmp_path):
+    bundle = build_weights_bundle(tmp_path / "b", list(TARGET), METRICS)
+    sc = _make_precomputed(tmp_path, bundle, model=_ProductionOnlyModel())
+    curators = sc.resample([0, 1])
+    assert len(curators) == 2
+    for sub in curators.values():
+        assert sub.precomputed_weights == sc.precomputed_weights
+
+
+# ---- resample_seeds_from_config(): so a config's resample: section works the same way whether
+# you go through the CLI or call from_config() yourself -----------------------------------------
+
+def _write_config(tmp_path, extra_yaml=""):
+    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"""
+workdir: {tmp_path / 'run'}
+target_distribution: {{A: 50, B: 30, C: 20}}
+inputs: {{synthetic_dir: {synthetic_dir}, real_dir: {real_dir}, resolution: 32}}
+model: {{trainer: tests.conftest:cli_fake_trainer}}
+metrics: {{instance: {METRICS}}}
+curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
+{extra_yaml}
+""")
+    return cfg
+
+
+def test_resample_seeds_from_config_returns_none_without_a_resample_section(tmp_path):
+    cfg = _write_config(tmp_path)
+    assert SynthCurator.resample_seeds_from_config(cfg) is None
+
+
+def test_resample_seeds_from_config_defaults_to_one_seed_when_seeds_key_omitted(tmp_path):
+    cfg = _write_config(tmp_path, extra_yaml="resample: {}")
+    assert SynthCurator.resample_seeds_from_config(cfg) == [0]
+
+
+def test_resample_seeds_from_config_expands_an_int_to_a_range(tmp_path):
+    cfg = _write_config(tmp_path, extra_yaml="resample: {seeds: 3}")
+    assert SynthCurator.resample_seeds_from_config(cfg) == [0, 1, 2]
+
+
+def test_resample_seeds_from_config_accepts_an_explicit_list(tmp_path):
+    cfg = _write_config(tmp_path, extra_yaml="resample: {seeds: [3, 7, 19]}")
+    assert SynthCurator.resample_seeds_from_config(cfg) == [3, 7, 19]

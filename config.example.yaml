@@ -150,3 +150,10 @@ curation:
 
   # ABSOLUTE cosine similarity to a real image; images above it are dropped. null disables.
   safety_max_similarity_threshold: 0.97
+
+# ---------------------------------------------------------------- resample (optional)
+# Model variance locked, data variance swept: runs the pipeline (or --train-production) once per
+# seed instead of once, reusing the same weights every time. Each seed gets its own
+# workdir/resample/seed_<n>/. Leave this whole section out for today's single-run behavior.
+# resample:
+#   seeds: 30   # an int (shorthand for seeds 0..29), or an explicit list, e.g. [3, 7, 19]. Default: 1

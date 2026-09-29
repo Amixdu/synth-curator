@@ -8,6 +8,9 @@ pipeline without wiring the Python API themselves.
     $ synth-curator config.yaml --train-production   # -> also trains the production model
     $ python -m synth_curator config.yaml
 
+With a config `resample:` section, both of the above sweep N seeds (SynthCurator.resample())
+instead of running once - see config.example.yaml.
+
 The model comes from the config's `model:` block (a dotted `trainer` path); this entry point has
 no way to pass a Python Model object directly - use SynthCurator.from_config in your own script
 for that.
@@ -32,8 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
 
     sc = SynthCurator.from_config(args.config)
-    result = sc.train_production() if args.train_production else sc.run()
-    print(result)
+    seeds = SynthCurator.resample_seeds_from_config(args.config)
+    if seeds is None:
+        print(sc.train_production() if args.train_production else sc.run())
+    else:
+        for seed, resampled in sc.resample(seeds).items():
+            result = resampled.train_production() if args.train_production else resampled.run()
+            print(f"seed={seed}: {result}")
     return 0
 
 
