@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+import os
 
 import numpy as np
 
@@ -23,7 +24,12 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 
 
 def list_images(root: Path) -> list[Path]:
-    return sorted(p for p in Path(root).rglob("*") if p.suffix.lower() in IMAGE_EXTS)
+    images = []
+    for dirpath, _, filenames in os.walk(root, followlinks=True):
+        for f in filenames:
+            if Path(f).suffix.lower() in IMAGE_EXTS:
+                images.append(Path(dirpath) / f)
+    return sorted(images)
 
 
 def flatten_name(path: Path, root: Path) -> str:
