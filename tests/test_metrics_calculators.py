@@ -53,7 +53,9 @@ def test_ssim_pair_different_images_scores_lower_than_identical():
 def paired_ctx(tmp_path):
     from PIL import Image
     synth_dir, real_dir, feat_dir = tmp_path / "synth", tmp_path / "real_std", tmp_path / "feat"
-    synth_dir.mkdir(); real_dir.mkdir(); feat_dir.mkdir()
+    synth_dir.mkdir()
+    real_dir.mkdir()
+    feat_dir.mkdir()
     rng = np.random.default_rng(0)
     img = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
     (synth_dir / "A").mkdir()

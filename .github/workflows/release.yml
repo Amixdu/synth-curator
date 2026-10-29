@@ -1,0 +1,63 @@
+name: release
+
+# Manual only, by design: nothing publishes on a push or tag. Go to the Actions tab, pick
+# "release", click "Run workflow", and choose which index to publish to. Auth is OIDC
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which index to publish to"
+        required: true
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    if: inputs.target == 'testpypi'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write   # required for Trusted Publishing - no token/secret used
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true   # testing often means re-running against the same version - skip instead of failing
+
+  publish-pypi:
+    if: inputs.target == 'pypi'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing - no token/secret used
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -80,7 +80,6 @@ def world(tmp_path):
 
     feats = tmp_path / "feat"
     feats.mkdir()
-    rng = np.random.default_rng(0)
     # keys must match standardize()'s actual flattened output names (real/A/r0.png -> "A__r0.png")
     rvec = {f"{cls}__r{i}.png": torch.randn(8) for i, cls in enumerate(["A", "A", "B"])}
     svec = {f"{c}/s{i}.png": torch.randn(8) for i, c in enumerate(["A", "A", "B", "B"])}

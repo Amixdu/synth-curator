@@ -3,12 +3,34 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "synth-curator"          # TODO: confirm PyPI availability before release
-version = "0.0.1.dev0"
+name = "synth-curator"
+dynamic = ["version"]
 description = "Utility-weighted curation of synthetic image pools: pick the subset that measurably helps your classifier."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Amindu Kumarasinghe", email = "amixxdu@gmail.com" },
+]
+keywords = ["synthetic-data", "data-curation", "image-classification", "medical-imaging", "machine-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
 dependencies = ["numpy", "pandas", "scipy", "torch", "pillow", "tqdm", "torchvision", "transformers", "scikit-image"]
+
+[project.urls]
+Homepage = "https://github.com/Amixdu/synth-curator"
+Repository = "https://github.com/Amixdu/synth-curator"
+Issues = "https://github.com/Amixdu/synth-curator/issues"
 
 [project.scripts]
 synth-curator = "synth_curator.cli:main"
@@ -17,6 +39,9 @@ synth-curator = "synth_curator.cli:main"
 full = ["opencv-python", "phasepack", "lpips", "brisque"]
 yaml = ["pyyaml"]
 dev = ["pytest", "pyyaml", "ruff"]
+
+[tool.hatch.version]
+path = "src/synth_curator/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synth_curator"]

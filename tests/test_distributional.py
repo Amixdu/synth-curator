@@ -73,7 +73,6 @@ def test_swd_hand_computed_constant_shift():
     n, d, c = 10, 3, 2.0
     a = torch.zeros(n, d)
     b = torch.full((n, d), c)
-    gen = torch.Generator().manual_seed(1)
     projections = torch.randn(d, 128, generator=torch.Generator().manual_seed(1))
     projections = projections / torch.linalg.norm(projections, dim=0, keepdim=True)
     expected = torch.abs(c * projections.sum(dim=0)).mean().item()
