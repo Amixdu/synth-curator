@@ -10,9 +10,9 @@ on what a given real image is called - see that function before changing this on
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
-import os
 
 import numpy as np
 

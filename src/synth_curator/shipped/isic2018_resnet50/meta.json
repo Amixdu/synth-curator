@@ -46,7 +46,7 @@
   },
 
   "provenance": {
-    "synth_curator_version": "0.0.1.dev0",
+    "synth_curator_version": "0.1.0",
     "computed_on": "2026-09-13"
   }
 }

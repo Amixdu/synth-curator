@@ -19,7 +19,8 @@
     "scoring": null
   },
   "tournament": {
-    "random_seeds_per_metric_set": 30
+    "random_seeds_per_metric_set": 30,
+    "random_control_seeds": 60
   },
   "curation": {
     "target_distribution": {"AKIEC": 3.27, "BCC": 5.13, "BKL": 10.97, "DF": 1.15, "MEL": 11.11, "NV": 66.95, "VASC": 1.42},
@@ -46,7 +47,7 @@
   },
 
   "provenance": {
-    "synth_curator_version": "0.0.1.dev0",
+    "synth_curator_version": "0.1.0",
     "computed_on": "2026-09-13"
   }
 }

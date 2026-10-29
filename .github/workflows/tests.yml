@@ -1,0 +1,66 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # catch a newly-disclosed CVE in an already-pinned dependency even when nothing in the repo
+    # changes to otherwise trigger a run.
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # [full] pulls in FSIM/LPIPS/BRISQUE/CLIP deps so the fuller suite runs, not just the core one.
+      - name: Install
+        run: pip install -e '.[dev,full]'
+
+      - name: Ruff
+        run: ruff check src/ tests/
+
+      - name: Pytest
+        run: pytest -q
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # pip itself gets audited otherwise (it's always present in the venv, but it isn't a
+      # dependency we actually ship) - upgrading first avoids that false positive every run.
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit
+          pip install -e '.[full,yaml]'
+      - name: pip-audit
+        run: pip-audit
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, security-audit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*

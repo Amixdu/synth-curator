@@ -50,7 +50,14 @@ def draw_blocks(df: pd.DataFrame, target_proportions: dict[str, float], num_imag
             p = np.exp(s)
             p /= p.sum()
             rs = seed_offset * 100_000 + bi * 100 + idx.get(class_name, 0)
-            rows.append(cdf.sample(n=count, replace=False, weights=p, random_state=rs).copy())
+            if count > 0 and count * p.max() > 1:
+                log.warning("temperature %.4g too low for %d candidates needing %d samples in "
+                           "class %r (top weight %.3g) - proportional sampling without "
+                           "replacement is impossible here, picking the top %d by score instead",
+                           temperature, len(cdf), count, class_name, p.max(), count)
+                rows.append(cdf.nlargest(count, "S_Composite").copy())
+            else:
+                rows.append(cdf.sample(n=count, replace=False, weights=p, random_state=rs).copy())
         bdf = pd.concat(rows)
         bdf["Block_ID"] = bi + 1
         blocks.append({"idx": bi + 1, "df": bdf})

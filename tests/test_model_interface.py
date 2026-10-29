@@ -3,7 +3,12 @@ import pytest
 
 from synth_curator.exceptions import SynthCuratorError
 from synth_curator.model_interface import (
-    check_predictions, import_dotted, load_model, load_model_factory, model_from_function)
+    check_predictions,
+    import_dotted,
+    load_model,
+    load_model_factory,
+    model_from_function,
+)
 
 
 def test_check_predictions_passes_through_a_valid_frame():

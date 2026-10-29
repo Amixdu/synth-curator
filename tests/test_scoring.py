@@ -1,7 +1,12 @@
 import pandas as pd
 import pytest
 
-from synth_curator.core.scoring import calculate_per_class_score, calculate_robust_bounds, calculate_robust_score, group_key
+from synth_curator.core.scoring import (
+    calculate_per_class_score,
+    calculate_robust_bounds,
+    calculate_robust_score,
+    group_key,
+)
 
 
 def test_robust_score_is_normalized_and_clipped():

@@ -6,7 +6,7 @@ import torch
 
 pytest.importorskip("PIL")
 
-from synth_curator.steps import features  # noqa: E402
+from synth_curator.steps import features
 
 
 def _img(path, seed, size=(24, 24)):

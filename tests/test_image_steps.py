@@ -7,11 +7,11 @@ import torch
 pytest.importorskip("PIL")
 pytest.importorskip("skimage")
 
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from synth_curator.exceptions import SynthCuratorError  # noqa: E402
-from synth_curator.steps import features, standardize  # noqa: E402
-from synth_curator.steps.metrics import compute_metrics  # noqa: E402
+from synth_curator.exceptions import SynthCuratorError
+from synth_curator.steps import features, standardize
+from synth_curator.steps.metrics import compute_metrics
 
 
 def _img(path, seed, size=(80, 60)):
@@ -80,7 +80,6 @@ def world(tmp_path):
 
     feats = tmp_path / "feat"
     feats.mkdir()
-    rng = np.random.default_rng(0)
     # keys must match standardize()'s actual flattened output names (real/A/r0.png -> "A__r0.png")
     rvec = {f"{cls}__r{i}.png": torch.randn(8) for i, cls in enumerate(["A", "A", "B"])}
     svec = {f"{c}/s{i}.png": torch.randn(8) for i, c in enumerate(["A", "A", "B", "B"])}

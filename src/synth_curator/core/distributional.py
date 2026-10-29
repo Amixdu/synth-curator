@@ -33,7 +33,7 @@ def calculate_fid(mu1: torch.Tensor, sigma1: torch.Tensor,
     mean_term = diff.dot(diff)
 
     try:
-        covmean, _ = linalg.sqrtm(sigma1_np @ sigma2_np, disp=False)
+        covmean = linalg.sqrtm(sigma1_np @ sigma2_np)
     except linalg.LinAlgError:
         log.warning("linalg.sqrtm failed to converge; returning inf")
         return float("inf")
@@ -44,7 +44,7 @@ def calculate_fid(mu1: torch.Tensor, sigma1: torch.Tensor,
     if not np.isfinite(covmean).all():
         log.warning("sqrtm returned non-finite values; retrying with a small diagonal offset")
         offset = np.eye(sigma1_np.shape[0]) * 1e-6
-        covmean, _ = linalg.sqrtm((sigma1_np + offset) @ (sigma2_np + offset))
+        covmean = linalg.sqrtm((sigma1_np + offset) @ (sigma2_np + offset))
         if np.iscomplexobj(covmean):
             covmean = covmean.real
 

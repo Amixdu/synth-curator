@@ -5,7 +5,11 @@ import pandas as pd
 import pytest
 
 from synth_curator import __version__
-from synth_curator.core.output import write_block_log, write_manifest, write_weights_used
+from synth_curator.core.output import (
+    write_block_log,
+    write_manifest,
+    write_weights_used,
+)
 
 
 def test_write_manifest_columns_and_image_dir_prefix(tmp_path):

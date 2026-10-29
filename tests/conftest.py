@@ -46,9 +46,12 @@ def build_image_pool(root, real_per_class=2, synthetic_per_class=None):
     real_idx = 0
     for cls in CLASSES:
         for _ in range(real_per_class):
-            make_image(real_dir / cls / f"r{real_idx}.png", seed, (32, 32)); seed += 1; real_idx += 1
+            make_image(real_dir / cls / f"r{real_idx}.png", seed, (32, 32))
+            seed += 1
+            real_idx += 1
         for i in range(synthetic_per_class[cls]):
-            make_image(synthetic_dir / cls / f"s{i}.png", seed, (32, 32)); seed += 1
+            make_image(synthetic_dir / cls / f"s{i}.png", seed, (32, 32))
+            seed += 1
     return real_dir, synthetic_dir
 
 

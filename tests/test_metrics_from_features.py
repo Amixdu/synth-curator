@@ -40,7 +40,9 @@ def test_realism_and_diversity_match_bruteforce(pool, tmp_path):
     real = torch.stack(list(torch.load(pool["features"] / "real_dino.pt").values()))
     synth_d = torch.load(pool["features"] / "synthetic_dino.pt")
     s = torch.stack(list(synth_d.values()))
-    n = lambda x: x / x.norm(dim=1, keepdim=True)
+
+    def n(x):
+        return x / x.norm(dim=1, keepdim=True)
     d_real = 2 - 2 * (n(s) @ n(real).T)
     assert np.allclose(df["realism_score"].values, d_real.sort(dim=1).values[:, 2].numpy(), atol=1e-4)
     d_self = 2 - 2 * (n(s) @ n(s).T)

@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from synth_curator import __version__, weights_bundle as wb
+from synth_curator import __version__
+from synth_curator import weights_bundle as wb
 from synth_curator.exceptions import SynthCuratorError
 from tests.conftest import build_weights_bundle
 

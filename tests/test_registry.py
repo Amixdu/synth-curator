@@ -1,7 +1,11 @@
 import pytest
 
 from synth_curator.core.registry import (
-    DEFAULT_METRICS, METRIC_PROPERTIES, is_distributional, is_instance, props,
+    DEFAULT_METRICS,
+    METRIC_PROPERTIES,
+    is_distributional,
+    is_instance,
+    props,
 )
 from synth_curator.exceptions import SynthCuratorError
 

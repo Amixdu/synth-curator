@@ -4,7 +4,9 @@ import pytest
 import torch
 
 from synth_curator.core.block_search import (
-    evaluate_distributional_utility_per_class, select_optimal_block_per_class, write_class_log,
+    evaluate_distributional_utility_per_class,
+    select_optimal_block_per_class,
+    write_class_log,
 )
 
 

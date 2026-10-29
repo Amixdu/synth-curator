@@ -8,8 +8,8 @@ from synth_curator.exceptions import MissingMetricsError, SynthCuratorError
 from synth_curator.steps import curate as curate_mod
 
 TARGET = {"A": 50.0, "B": 50.0}
-BASE_KW = dict(target_distribution=TARGET, num_images=4, temperature=0.1, dist_group_by=[],
-              block_search=False, num_blocks=1, safety_max_similarity_threshold=None, seed=0)
+BASE_KW = {"target_distribution": TARGET, "num_images": 4, "temperature": 0.1, "dist_group_by": [],
+              "block_search": False, "num_blocks": 1, "safety_max_similarity_threshold": None, "seed": 0}
 
 
 def _metadata(tmp_path, with_group=False):

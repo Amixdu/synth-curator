@@ -27,6 +27,7 @@ metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contributio
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     from synth_curator import SynthCurator
+
     from .conftest import cli_fake_trainer
     sc = SynthCurator.from_config(config_path, model=cli_fake_trainer())
     std_dir = sc.standardize()
@@ -48,6 +49,7 @@ curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: 
 
     # pre-seed features: DINOv2/InceptionV3 extraction needs network + heavy deps not available here
     from synth_curator import SynthCurator
+
     from .conftest import cli_fake_trainer
     sc = SynthCurator.from_config(config_path, model=cli_fake_trainer())
     std_dir = sc.standardize()
@@ -72,6 +74,7 @@ metrics: {{instance: [fscs_score, realism_score, diversity_score, is_contributio
 curation: {{num_images: 15, dist_group_by: [], safety_max_similarity_threshold: null}}
 """)
     from synth_curator import SynthCurator
+
     from .conftest import cli_fake_trainer_with_production
     sc = SynthCurator.from_config(config_path, model=cli_fake_trainer_with_production())
     std_dir = sc.standardize()
