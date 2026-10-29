@@ -23,7 +23,7 @@ def test_draw_uses_frozen_seed_formula():
     """Reproduce the draw by hand: seed = offset*100_000 + block*100 + class_idx."""
     rng = np.random.default_rng(1)
     df = pd.DataFrame({"target_class_label": rng.choice(["A", "B"], 400), "S_Composite": rng.random(400)})
-    target, T, offset = {"A": 60.0, "B": 40.0}, 0.1, 3
+    target, T, offset = {"A": 60.0, "B": 40.0}, 0.5, 3
     (block,) = draw_blocks(df, target, 100, 1, T, offset)
     for cls, idx, n in (("A", 0, 60), ("B", 1, 40)):
         cdf = df[df.target_class_label == cls]
