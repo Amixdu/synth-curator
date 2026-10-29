@@ -55,9 +55,40 @@ jobs:
     environment: pypi
     permissions:
       id-token: write   # required for Trusted Publishing - no token/secret used
+      contents: write   # required to push the tag below
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+      # Only reached if the publish step above succeeded - a tag only ever marks a commit that's
+      # actually live on PyPI, never a failed or in-progress attempt.
+      - name: Tag the released version
+        run: |
+          VERSION=$(python3 -c "import pathlib, re; f = next(pathlib.Path('dist').glob('*.whl')).name; print(re.match(r'^[^-]+-([^-]+)-', f).group(1))")
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+
+      # Pulls this version's section out of CHANGELOG.md (everything between its "## x.y.z" header
+      # and the next one) as the release notes; falls back to a bare pointer if that section is
+      # missing, rather than publish an empty-looking release.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## " ver { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)." > release_notes.md
+          fi
+          gh release create "$TAG" --title "$TAG" --notes-file release_notes.md
