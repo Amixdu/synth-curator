@@ -38,7 +38,7 @@ synth-curator = "synth_curator.cli:main"
 [project.optional-dependencies]
 full = ["opencv-python", "phasepack", "lpips", "brisque"]
 yaml = ["pyyaml"]
-dev = ["pytest", "pyyaml", "ruff"]
+dev = ["pytest", "pyyaml", "ruff~=0.17.3"]
 
 [tool.hatch.version]
 path = "src/synth_curator/__init__.py"

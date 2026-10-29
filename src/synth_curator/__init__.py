@@ -4,4 +4,4 @@ __version__ = "0.1.0"   # set before the imports below - weights_bundle.py reads
 from .model_interface import Model, ProductionModel, model_from_function
 from .pipeline import SynthCurator
 
-__all__ = ["SynthCurator", "Model", "ProductionModel", "model_from_function"]
+__all__ = ["Model", "ProductionModel", "SynthCurator", "model_from_function"]

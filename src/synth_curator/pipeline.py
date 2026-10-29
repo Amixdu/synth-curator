@@ -33,12 +33,28 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import __version__   # set at the top of __init__.py, before this module is imported
+from . import (
+    __version__,  # set at the top of __init__.py, before this module is imported
+)
 from .core import fingerprint
 from .core.registry import DEFAULT_METRICS, is_distributional, is_instance, props
 from .exceptions import SynthCuratorError
-from .model_interface import Model, ModelFactory, import_dotted, load_model, load_model_factory
-from .steps import curate, features, metric_sets, metrics, standardize, tournament, weights
+from .model_interface import (
+    Model,
+    ModelFactory,
+    import_dotted,
+    load_model,
+    load_model_factory,
+)
+from .steps import (
+    curate,
+    features,
+    metric_sets,
+    metrics,
+    standardize,
+    tournament,
+    weights,
+)
 from .steps.weights import ScoringFn
 from .weights_bundle import SCHEMA_VERSION, load_shipped_weights, load_weights_path
 
@@ -206,7 +222,7 @@ class SynthCurator:
                 raise SynthCuratorError(f"metadata_csv does not exist or is not a file: {self.metadata_csv}")
             try:
                 meta_df = pd.read_csv(self.metadata_csv)
-            except Exception as e:  # noqa: BLE001 - any parse failure is a clear config error, not a crash
+            except Exception as e:
                 raise SynthCuratorError(f"metadata_csv could not be read as a CSV: {self.metadata_csv} ({e})") from e
             missing_cols = {"filename", "target_class_label"} - set(meta_df.columns)
             if missing_cols:
@@ -324,19 +340,19 @@ class SynthCurator:
             inputs_cfg.get("synthetic_dir"), inputs_cfg.get("real_dir"), inputs_cfg.get("resolution"))
         if not (synthetic_dir and real_dir and resolution):
             raise SynthCuratorError("inputs.synthetic_dir, inputs.real_dir and inputs.resolution are all required")
-        kw = dict(
-            model=model, model_factory=model_factory, gpu_ids=gpu_ids,
-            weights_path=weights_path, shipped_weights=shipped_weights,
-            synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=resolution,
-            pool_workdir=inputs_cfg.get("pool_workdir"),
-            num_images=curation_cfg.get("num_images", 8012), temperature=curation_cfg.get("temperature", 0.05),
-            dist_group_by=curation_cfg.get("dist_group_by", ["source_checkpoint_kimg", "cfg_scale"]),
-            metadata_csv=inputs_cfg.get("metadata_csv"),
-            block_search=curation_cfg.get("block_search", False), num_blocks=curation_cfg.get("num_blocks", 1),
-            safety_max_similarity_threshold=curation_cfg.get("safety_max_similarity_threshold", 0.97),
-            dist_min_samples=metrics_cfg.get("dist_min_samples"),
-            seed=config.get("seed", 0),
-        )
+        kw = {
+            "model": model, "model_factory": model_factory, "gpu_ids": gpu_ids,
+            "weights_path": weights_path, "shipped_weights": shipped_weights,
+            "synthetic_dir": synthetic_dir, "real_dir": real_dir, "resolution": resolution,
+            "pool_workdir": inputs_cfg.get("pool_workdir"),
+            "num_images": curation_cfg.get("num_images", 8012), "temperature": curation_cfg.get("temperature", 0.05),
+            "dist_group_by": curation_cfg.get("dist_group_by", ["source_checkpoint_kimg", "cfg_scale"]),
+            "metadata_csv": inputs_cfg.get("metadata_csv"),
+            "block_search": curation_cfg.get("block_search", False), "num_blocks": curation_cfg.get("num_blocks", 1),
+            "safety_max_similarity_threshold": curation_cfg.get("safety_max_similarity_threshold", 0.97),
+            "dist_min_samples": metrics_cfg.get("dist_min_samples"),
+            "seed": config.get("seed", 0),
+        }
         if not precomputed:
             weights_cfg = config.get("weights", {})
             kw.update(

@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 import torch
 
-from synth_curator.core.features import feature_path, load_features, real_class_lookup, stack_real, stack_synthetic
+from synth_curator.core.features import (
+    feature_path,
+    load_features,
+    real_class_lookup,
+    stack_real,
+    stack_synthetic,
+)
 from synth_curator.exceptions import MissingFeaturesError
 
 

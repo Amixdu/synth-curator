@@ -7,11 +7,11 @@ import torch
 pytest.importorskip("PIL")
 pytest.importorskip("skimage")
 
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from synth_curator.exceptions import SynthCuratorError  # noqa: E402
-from synth_curator.steps import features, standardize  # noqa: E402
-from synth_curator.steps.metrics import compute_metrics  # noqa: E402
+from synth_curator.exceptions import SynthCuratorError
+from synth_curator.steps import features, standardize
+from synth_curator.steps.metrics import compute_metrics
 
 
 def _img(path, seed, size=(80, 60)):

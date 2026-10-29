@@ -5,7 +5,11 @@ import pytest
 from synth_curator.exceptions import SynthCuratorError
 from synth_curator.model_interface import model_from_function
 from synth_curator.steps import tournament
-from tests.conftest import cli_fake_failing_model_factory, cli_fake_model_factory, cli_fake_recording_model_factory
+from tests.conftest import (
+    cli_fake_failing_model_factory,
+    cli_fake_model_factory,
+    cli_fake_recording_model_factory,
+)
 
 
 def _manifest(tmp_path, name="m.csv"):

@@ -15,7 +15,10 @@ from pathlib import Path
 import pandas as pd
 
 from ..core.block_search import (
-    evaluate_distributional_utility_per_class, select_optimal_block_per_class, write_class_log)
+    evaluate_distributional_utility_per_class,
+    select_optimal_block_per_class,
+    write_class_log,
+)
 from ..core.groups import compute_group_scores
 from ..core.output import write_block_log, write_manifest, write_weights_used
 from ..core.registry import is_distributional, is_instance, props

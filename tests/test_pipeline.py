@@ -12,12 +12,19 @@ import pytest
 from synth_curator import SynthCurator, model_from_function
 from synth_curator.exceptions import SynthCuratorError
 
-from .conftest import TARGET, build_image_pool, build_weights_bundle, fake_extract_features, fake_model, make_image
+from .conftest import (
+    TARGET,
+    build_image_pool,
+    build_weights_bundle,
+    fake_extract_features,
+    fake_model,
+    make_image,
+)
 
 pytest.importorskip("PIL")
 
 METRICS = ["fscs_score", "realism_score", "diversity_score", "is_contribution_score"]  # feature-based only
-KW = dict(metrics=METRICS, dist_group_by=[], num_images=15, safety_max_similarity_threshold=None)
+KW = {"metrics": METRICS, "dist_group_by": [], "num_images": 15, "safety_max_similarity_threshold": None}
 
 
 def _make(tmp_path, workdir="run", **overrides):
@@ -632,14 +639,14 @@ def test_run_tournament_dispatches_to_run_parallel_when_model_factory_is_set(tmp
 
 
 def test_validate_rejects_a_missing_synthetic_dir(tmp_path):
-    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    real_dir, _ = build_image_pool(tmp_path)
     with pytest.raises(SynthCuratorError, match="synthetic_dir"):
         SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=tmp_path / "nope",
                     real_dir=real_dir, resolution=32, **KW)
 
 
 def test_validate_rejects_an_empty_synthetic_dir(tmp_path):
-    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    real_dir, _ = build_image_pool(tmp_path)
     empty = tmp_path / "empty"
     empty.mkdir()
     with pytest.raises(SynthCuratorError, match="synthetic_dir"):
@@ -915,7 +922,7 @@ def test_curate_step_does_not_recompute_when_nothing_changed(tmp_path, monkeypat
 
 
 def test_validate_rejects_a_missing_real_dir(tmp_path):
-    real_dir, synthetic_dir = build_image_pool(tmp_path)
+    _, synthetic_dir = build_image_pool(tmp_path)
     with pytest.raises(SynthCuratorError, match="real_dir"):
         SynthCurator(tmp_path / "r", TARGET, model=fake_model(), synthetic_dir=synthetic_dir,
                     real_dir=tmp_path / "nope", resolution=32, **KW)
@@ -1058,7 +1065,7 @@ def test_train_production_curates_then_delegates_and_returns_whatever_the_model_
 
 # ---- weights_path / shipped_weights (precomputed weights - skip the tournament) -----------
 
-PRECOMPUTED_KW = dict(dist_group_by=[], num_images=15, safety_max_similarity_threshold=None)   # no metrics= - that's forbidden here
+PRECOMPUTED_KW = {"dist_group_by": [], "num_images": 15, "safety_max_similarity_threshold": None}   # no metrics= - that's forbidden here
 
 
 class _ProductionOnlyModel:
@@ -1075,8 +1082,8 @@ class _ProductionOnlyModel:
 
 def _make_precomputed(tmp_path, bundle_dir, **overrides):
     real_dir, synthetic_dir = build_image_pool(tmp_path)
-    kw = dict(dist_group_by=[], num_images=15, safety_max_similarity_threshold=None,
-             weights_path=bundle_dir, synthetic_dir=synthetic_dir, real_dir=real_dir, resolution=32)
+    kw = {"dist_group_by": [], "num_images": 15, "safety_max_similarity_threshold": None,
+             "weights_path": bundle_dir, "synthetic_dir": synthetic_dir, "real_dir": real_dir, "resolution": 32}
     kw.update(overrides)
     sc = SynthCurator(tmp_path / "run", TARGET, **kw)
     std_dir = sc.standardize()

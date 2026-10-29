@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("skimage")
 
-from synth_curator.steps.metrics import MetricContext, paired, single_image  # noqa: E402
+from synth_curator.steps.metrics import MetricContext, paired, single_image
 
 
 def test_psnr_pair_returns_none_on_shape_mismatch():

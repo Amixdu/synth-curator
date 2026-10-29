@@ -106,12 +106,13 @@ def fsim(df, ctx):
 
 def lpips(df, ctx, network: str = "alex", batch_size: int = 64, num_workers: int = 4):
     """LPIPS distance (lower = closer); best neighbour = minimum. Batched on GPU when available."""
-    import torch
     from collections import defaultdict
+
+    import lpips as lpips_lib
+    import torch
     from PIL import Image
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms
-    import lpips as lpips_lib
     from tqdm import tqdm
 
     knn = json.loads((ctx.features_dir / "knn_map.json").read_text())

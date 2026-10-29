@@ -3,7 +3,10 @@ import pandas as pd
 import pytest
 import torch
 
-from synth_curator.core.safety import apply_safety_filter, compute_max_similarity_to_real
+from synth_curator.core.safety import (
+    apply_safety_filter,
+    compute_max_similarity_to_real,
+)
 from synth_curator.exceptions import SynthCuratorError
 
 

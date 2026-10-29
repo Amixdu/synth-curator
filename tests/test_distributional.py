@@ -5,8 +5,12 @@ import pytest
 import torch
 
 from synth_curator.core.distributional import (
-    calculate_fid, calculate_kid, calculate_per_image_kl_divergence,
-    calculate_precision_recall_scores, calculate_swd, get_stats,
+    calculate_fid,
+    calculate_kid,
+    calculate_per_image_kl_divergence,
+    calculate_precision_recall_scores,
+    calculate_swd,
+    get_stats,
 )
 
 

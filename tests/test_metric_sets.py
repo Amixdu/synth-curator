@@ -149,7 +149,7 @@ def test_curate_metric_sets_is_resumable(tmp_path, monkeypatch):
         return real_write(selected, path, image_dir)
 
     monkeypatch.setattr(ms, "write_manifest", spy)
-    kw = dict(target_distribution={"A": 50, "B": 50}, num_images=4, dist_group_by=["grp"], seeds=[0])
+    kw = {"target_distribution": {"A": 50, "B": 50}, "num_images": 4, "dist_group_by": ["grp"], "seeds": [0]}
     ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score", "kid_dino"], **kw)
     first = len(calls)
     ms.curate_metric_sets(metadata_csv, features_dir, tmp_path / "sets", ["lpips_score", "kid_dino"], **kw)
